@@ -1,15 +1,27 @@
 'use client';
 
-import { Bell, Search } from 'lucide-react';
+import { Bell, Search, Menu } from 'lucide-react';
 import { useStore } from '@/lib/store';
+import { useState } from 'react';
+import { MobileSidebarDrawer } from '@/components/layout/MobileSidebarDrawer';
 
 export function Topbar() {
   const { currentUser } = useStore();
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
-    <header className="h-20 bg-white border-b flex items-center justify-between px-8 shadow-sm">
-      <div className="flex-1 max-w-xl">
-        <div className="relative">
+    <>
+      <MobileSidebarDrawer open={mobileOpen} onClose={() => setMobileOpen(false)} />
+      <header className="h-20 bg-white border-b flex items-center justify-between px-4 sm:px-8 shadow-sm">
+      <div className="flex items-center gap-3 flex-1 max-w-xl">
+        <button
+          onClick={() => setMobileOpen(true)}
+          className="lg:hidden p-2 rounded-xl hover:bg-slate-100 transition-colors"
+          aria-label="Open menu"
+        >
+          <Menu className="h-5 w-5 text-slate-700" />
+        </button>
+        <div className="relative w-full">
           <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
             <Search className="h-5 w-5 text-slate-400" />
           </div>
@@ -37,5 +49,6 @@ export function Topbar() {
         </div>
       </div>
     </header>
+    </>
   );
 }

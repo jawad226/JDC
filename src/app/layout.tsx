@@ -21,7 +21,9 @@ export default function RootLayout({
     <html lang="en">
       <body className={`${inter.className} bg-slate-50 min-h-screen flex`}>
         <AuthProvider>
-          <Sidebar />
+          <div className="hidden lg:block">
+            <Sidebar />
+          </div>
           <div className="flex-1 flex flex-col min-h-screen overflow-hidden">
             <Topbar />
             <main className="flex-1 overflow-x-hidden overflow-y-auto bg-slate-50/50 p-8">

@@ -10,18 +10,36 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // If not logged in and not on login page, redirect to /login
-  if (!role && pathname !== '/login') {
+  // If not logged in and not on login/register page, redirect to /login
+  if (!role && pathname !== '/login' && pathname !== '/register') {
     return NextResponse.redirect(new URL('/login', request.url));
   }
 
-  // If already logged in, skip login page
-  if (role && pathname === '/login') {
+  // If already logged in, skip login/register page
+  if (role && (pathname === '/login' || pathname === '/register')) {
+    return NextResponse.redirect(new URL('/', request.url));
+  }
+
+  // Pending User: can ONLY access /pending
+  if (role === 'Pending User') {
+    if (pathname !== '/pending') {
+      return NextResponse.redirect(new URL('/pending', request.url));
+    }
+    return NextResponse.next();
+  }
+
+  // If approved user tries to access /pending, redirect home
+  if (role && role !== 'Pending User' && pathname === '/pending') {
     return NextResponse.redirect(new URL('/', request.url));
   }
 
   // Admin section: Only Admin can access
   if (pathname.startsWith('/admin') && role !== 'Admin') {
+    return NextResponse.redirect(new URL('/', request.url));
+  }
+
+  // My Requests: Admin should not access
+  if (pathname.startsWith('/my-requests') && role === 'Admin') {
     return NextResponse.redirect(new URL('/', request.url));
   }
 

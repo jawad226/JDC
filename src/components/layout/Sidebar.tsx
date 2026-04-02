@@ -9,7 +9,6 @@ import {
   LayoutDashboard,
   Calendar,
   Clock,
-  ReceiptText,
   CalendarClock,
   ClipboardList,
   UsersRound,
@@ -22,7 +21,6 @@ const sidebarItems = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Schedule', href: '/schedule', icon: Calendar },
   { name: 'Timesheet', href: '/timesheet', icon: Clock },
-  { name: 'Reimbursements', href: '/reimbursements', icon: ReceiptText },
   { name: 'Availability', href: '/availability', icon: CalendarClock },
   { name: 'My Requests', href: '/my-requests', icon: ClipboardList },
   { name: 'Request Management', href: '/request-management', icon: UsersRound },
@@ -41,6 +39,7 @@ export function Sidebar() {
 
   const filteredSidebarItems = sidebarItems.filter(item => {
     if (item.name === 'Admin Control' && currentUser?.role !== 'Admin') return false;
+    if (item.name === 'My Requests' && currentUser?.role === 'Admin') return false;
     if (item.name === 'Request Management' && currentUser?.role === 'Employee') return false;
     return true;
   });
@@ -48,12 +47,15 @@ export function Sidebar() {
   return (
     <aside className="w-64 bg-white border-r h-screen overflow-y-auto flex flex-col pt-6 pb-6 shadow-sm">
       <div className="px-6 mb-8 flex justify-center items-center">
-        {/* Assurgent Logo mock */}
-        <div className="flex flex-col items-center cursor-pointer">
-          <svg width="40" height="20" viewBox="0 0 100 50" className="text-blue-500 mb-1">
-             <path d="M50 0 C 60 20, 80 40, 100 50 C 80 40, 60 20, 50 10 C 40 20, 20 40, 0 50 C 20 40, 40 20, 50 0 Z" fill="currentColor" />
-          </svg>
-          <span className="text-xl font-serif font-bold tracking-tight text-slate-800">assurgent</span>
+        <div className="flex flex-col items-center select-none">
+          <div className="h-16 w-full flex items-center justify-center">
+            <img
+              src="/brand/logo.png"
+              alt="Global Digital Care"
+              className="h-16 w-auto max-w-[180px] object-contain"
+              draggable={false}
+            />
+          </div>
         </div>
       </div>
       

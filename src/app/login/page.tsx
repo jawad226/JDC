@@ -21,12 +21,18 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-slate-50 absolute inset-0 z-50">
       <div className="bg-white p-10 rounded-2xl shadow-xl border border-slate-100 w-full max-w-md">
         <div className="flex flex-col items-center mb-8">
-          <div className="flex flex-col items-center cursor-pointer">
-            <svg width="60" height="30" viewBox="0 0 100 50" className="text-blue-500 mb-2">
-               <path d="M50 0 C 60 20, 80 40, 100 50 C 80 40, 60 20, 50 10 C 40 20, 20 40, 0 50 C 20 40, 40 20, 50 0 Z" fill="currentColor" />
-            </svg>
-            <span className="text-3xl font-serif font-bold tracking-tight text-slate-800">assurgent</span>
-            <span className="text-sm font-medium text-slate-400 mt-1 uppercase tracking-widest">Global Digital Care</span>
+          <div className="flex flex-col items-center">
+            <div className="h-20 w-full flex items-center justify-center">
+              <img
+                src="/brand/logo.png"
+                alt="Global Digital Care"
+                className="h-20 w-auto max-w-[320px] object-contain"
+                draggable={false}
+              />
+            </div>
+            <span className="text-sm font-medium text-slate-400 mt-3 uppercase tracking-widest">
+              Global Digital Care
+            </span>
           </div>
         </div>
 
