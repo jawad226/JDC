@@ -13,7 +13,7 @@ export default function PendingPage() {
     Cookies.remove('auth-role');
     Cookies.remove('auth-user-id');
     setCurrentUser(null);
-    router.push('/login');
+    router.push('/auth/login');
     router.refresh();
   };
 

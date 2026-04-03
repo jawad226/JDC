@@ -12,7 +12,7 @@ export function Topbar() {
   return (
     <>
       <MobileSidebarDrawer open={mobileOpen} onClose={() => setMobileOpen(false)} />
-      <header className="h-20 bg-white border-b flex items-center justify-between px-4 sm:px-8 shadow-sm">
+      <header className="flex h-20 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4 shadow-sm sm:px-8">
       <div className="flex items-center gap-3 flex-1 max-w-xl">
         <button
           onClick={() => setMobileOpen(true)}

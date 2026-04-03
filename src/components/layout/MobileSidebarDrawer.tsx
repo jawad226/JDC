@@ -1,23 +1,25 @@
- 'use client';
- 
- import Link from 'next/link';
- import { usePathname, useRouter } from 'next/navigation';
- import Cookies from 'js-cookie';
- import { useStore } from '@/lib/store';
- import {
-   LayoutDashboard,
-   Calendar,
-   Clock,
-   CalendarClock,
-   ClipboardList,
-   UsersRound,
-   HelpCircle,
-   LogOut,
-   ShieldCheck,
-   X,
- } from 'lucide-react';
- 
- const navItems = [
+'use client';
+
+import Image from 'next/image';
+import Link from 'next/link';
+import { BRAND_LOGO_URL } from '@/lib/brand';
+import { usePathname, useRouter } from 'next/navigation';
+import Cookies from 'js-cookie';
+import { useStore } from '@/lib/store';
+import {
+  LayoutDashboard,
+  Calendar,
+  Clock,
+  CalendarClock,
+  ClipboardList,
+  UsersRound,
+  HelpCircle,
+  LogOut,
+  ShieldCheck,
+  X,
+} from 'lucide-react';
+
+const navItems = [
    { name: 'Dashboard', href: '/', icon: LayoutDashboard },
    { name: 'Schedule', href: '/schedule', icon: Calendar },
    { name: 'Timesheet', href: '/timesheet', icon: Clock },
@@ -65,19 +67,20 @@
        />
  
        <div
-         className={`absolute left-0 top-0 h-full w-[84%] max-w-[320px] bg-white border-r shadow-2xl transition-transform duration-300 ${
+         className={`absolute left-0 top-0 h-full w-[84%] max-w-[320px] border-r border-slate-200 bg-white shadow-2xl transition-transform duration-300 ${
            open ? 'translate-x-0' : '-translate-x-full'
          }`}
          role="dialog"
          aria-modal="true"
        >
-         <div className="h-20 px-5 flex items-center justify-between border-b">
-           <div className="flex items-center gap-3">
-             <img
-               src="/brand/logo.png"
+         <div className="flex h-20 items-center justify-between border-b border-slate-200 px-5">
+           <div className="relative h-10 w-[140px] shrink-0">
+             <Image
+               src={BRAND_LOGO_URL}
                alt="Global Digital Care"
-               className="h-10 w-auto object-contain"
-               draggable={false}
+               fill
+               className="object-contain object-left"
+               sizes="140px"
              />
            </div>
            <button
@@ -127,7 +130,7 @@
                      Cookies.remove('auth-user-id');
                      setCurrentUser(null);
                      onClose();
-                     router.push('/login');
+                     router.push('/auth/login');
                      router.refresh();
                    }}
                    className="w-full flex items-center px-4 py-3 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors"

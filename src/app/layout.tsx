@@ -19,16 +19,18 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${inter.className} bg-slate-50 min-h-screen flex`}>
+      <body className={`${inter.className} bg-slate-50 antialiased`}>
         <AuthProvider>
-          <div className="hidden lg:block">
-            <Sidebar />
-          </div>
-          <div className="flex-1 flex flex-col min-h-screen overflow-hidden">
-            <Topbar />
-            <main className="flex-1 overflow-x-hidden overflow-y-auto bg-slate-50/50 p-8">
-              {children}
-            </main>
+          <div className="flex h-[100dvh] min-h-0 w-full overflow-hidden">
+            <div className="hidden h-full shrink-0 lg:block">
+              <Sidebar />
+            </div>
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              <Topbar />
+              <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-slate-50/50 p-8">
+                {children}
+              </main>
+            </div>
           </div>
         </AuthProvider>
       </body>

@@ -1,6 +1,8 @@
 'use client';
 
+import Image from 'next/image';
 import Link from 'next/link';
+import { BRAND_LOGO_URL } from '@/lib/brand';
 import { usePathname, useRouter } from 'next/navigation';
 import { useStore } from '@/lib/store';
 import Cookies from 'js-cookie';
@@ -45,15 +47,17 @@ export function Sidebar() {
   });
 
   return (
-    <aside className="w-64 bg-white border-r h-screen overflow-y-auto flex flex-col pt-6 pb-6 shadow-sm">
+    <aside className="flex h-full w-64 shrink-0 flex-col overflow-y-auto border-r border-slate-200 bg-white pt-6 pb-6 shadow-sm">
       <div className="px-6 mb-8 flex justify-center items-center">
         <div className="flex flex-col items-center select-none">
-          <div className="h-16 w-full flex items-center justify-center">
-            <img
-              src="/brand/logo.png"
+          <div className="relative mx-auto h-16 w-[180px]">
+            <Image
+              src={BRAND_LOGO_URL}
               alt="Global Digital Care"
-              className="h-16 w-auto max-w-[180px] object-contain"
-              draggable={false}
+              fill
+              className="object-contain object-center"
+              sizes="180px"
+              priority
             />
           </div>
         </div>
@@ -92,7 +96,7 @@ export function Sidebar() {
                   Cookies.remove('auth-role');
                   Cookies.remove('auth-user-id');
                   setCurrentUser(null);
-                  router.push('/login');
+                  router.push('/auth/login');
                   router.refresh();
                 }}
                 className="w-full flex items-center px-4 py-3 rounded-xl text-sm font-medium text-slate-500 hover:bg-slate-50 hover:text-slate-900 transition-colors"

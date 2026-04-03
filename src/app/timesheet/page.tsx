@@ -1,9 +1,11 @@
 'use client';
 
 import Link from 'next/link';
+import { GlobalAttendanceLog } from '@/components/attendance/GlobalAttendanceLog';
+import { ManualTimesheetLog } from '@/components/attendance/ManualTimesheetLog';
 import { useStore } from '@/lib/store';
 import { format, startOfWeek, endOfWeek, isWithinInterval } from 'date-fns';
-import { Clock, TrendingUp, AlertCircle, Calendar, ArrowRight, UserCheck, Users, Check } from 'lucide-react';
+import { Clock, TrendingUp, AlertCircle, Calendar, ArrowRight, UserCheck, Users, Check, Plus } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 export default function TimesheetPage() {
@@ -14,31 +16,41 @@ export default function TimesheetPage() {
   // Team Leader: Team attendance report + personal history
   if (currentUser?.role === 'Team Leader') return <TeamLeaderTimesheetView />;
   // HR: use Request Management to approve/reject manual time requests
-  if (currentUser?.role === 'HR') return <HRTimesheetInfo />;
+  if (currentUser?.role === 'HR') return <HRTimesheetView />;
   // Employee: personal attendance history
   return <EmployeeTimesheetView />;
 }
 
-function HRTimesheetInfo() {
+function HRTimesheetView() {
   return (
-    <div className="max-w-4xl mx-auto space-y-8 pb-12">
-      <div className="bg-slate-900 rounded-[2.5rem] shadow-2xl p-10 relative overflow-hidden">
-        <div className="absolute top-0 right-0 -translate-y-1/2 translate-x-1/4 w-96 h-96 bg-blue-500 rounded-full opacity-10 blur-3xl" />
+    <div className="mx-auto max-w-6xl space-y-8 pb-12">
+      <div className="relative overflow-hidden rounded-[2.5rem] bg-slate-900 p-10 shadow-2xl">
+        <div className="absolute right-0 top-0 h-96 w-96 translate-x-1/4 -translate-y-1/2 rounded-full bg-blue-500 opacity-10 blur-3xl" />
         <div className="relative z-10">
-          <h1 className="text-4xl font-light text-white tracking-tight leading-tight">
+          <h1 className="text-4xl font-light leading-tight tracking-tight text-white">
             HR <br />
-            <span className="font-bold text-blue-400">Manual Time Approval</span>
+            <span className="font-bold text-blue-400">Manual Timesheet</span>
           </h1>
-          <p className="text-slate-400 mt-4 max-w-md">
-            Approve/reject employees' manual time requests from the Request Management screen (so the workflow stays controlled).
+          <p className="mt-4 max-w-md text-slate-400">
+            Approve pending requests in{' '}
+            <Link href="/request-management" className="font-bold text-blue-300 hover:underline">
+              Request Management
+            </Link>
+            ; approved entries appear below.
           </p>
         </div>
       </div>
 
-      <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm p-8">
-        <h2 className="text-lg font-bold text-slate-800">Where to manage requests</h2>
-        <p className="text-slate-500 mt-2">
-          Go to <Link href="/request-management" className="text-blue-600 font-bold hover:underline">Request Management</Link> and switch to “Manual Time Requests”.
+      <ManualTimesheetLog />
+
+      <div className="rounded-[2rem] border border-slate-100 bg-white p-8 shadow-sm">
+        <h2 className="text-lg font-bold text-slate-800">Pending approvals</h2>
+        <p className="mt-2 text-slate-500">
+          Open{' '}
+          <Link href="/request-management" className="font-bold text-blue-600 hover:underline">
+            Request Management
+          </Link>{' '}
+          and use the Manual Time Requests tab to approve or reject.
         </p>
       </div>
     </div>
@@ -63,7 +75,7 @@ function AdminTimesheetView() {
         </div>
       </div>
 
-      <TimesheetTable timesheets={sortedTimesheets} users={users} title="Global Attendance Log" />
+      <GlobalAttendanceLog />
     </div>
   );
 }
@@ -230,11 +242,18 @@ function EmployeeTimesheetView() {
 
       {/* Personal Table */}
       <div className="bg-white rounded-[2.5rem] shadow-sm border border-slate-100 overflow-hidden">
-        <div className="px-8 py-6 border-b border-slate-50 flex items-center justify-between">
+        <div className="flex flex-col gap-4 border-b border-slate-50 px-8 py-6 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
             <UserCheck className="w-5 h-5 text-blue-500" />
             Recent Clock History
           </h2>
+          <Link
+            href="/my-requests?tab=manual"
+            className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-700"
+          >
+            <Plus className="h-4 w-4" />
+            Request manual time
+          </Link>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">

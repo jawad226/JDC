@@ -3,6 +3,9 @@ import { persist } from 'zustand/middleware';
 
 export type Role = 'Admin' | 'HR' | 'Team Leader' | 'Employee' | 'Pending User';
 
+/** Department options for registration (client-side demo). */
+export type Department = 'Web Design' | 'MERN Stack' | 'Web Development' | 'SEO';
+
 export interface User {
   id: string;
   name: string;
@@ -11,6 +14,17 @@ export interface User {
   avatar?: string;
   team?: string;
   status?: 'Available' | 'Unavailable' | 'Sick';
+  phone?: string;
+  department?: Department;
+  /** Demo-only stored credential; do not render in admin lists. */
+  password?: string;
+}
+
+export interface PasswordResetToken {
+  id: string;
+  email: string;
+  token: string;
+  expiresAt: string;
 }
 
 export interface TimesheetEntry {
@@ -169,17 +183,33 @@ interface AppState {
   removeTeam: (name: string) => void;
   // Approval
   approveUser: (userId: string, role: Role, team: string) => void;
-  // Registration
-  registerUser: (name: string, email: string, password: string) => User;
+  // Registration & auth (demo: passwords stored in persisted state)
+  registerUser: (input: {
+    name: string;
+    email: string;
+    password: string;
+    phone: string;
+    department: Department;
+  }) => { ok: true; user: User } | { ok: false; error: string };
+  loginWithCredentials: (email: string, password: string) =>
+    | { ok: true; user: User }
+    | { ok: false; error: string };
+  requestPasswordReset: (email: string) =>
+    | { ok: true; token: string; expiresAt: string }
+    | { ok: false; error: string };
+  resetPasswordWithToken: (token: string, newPassword: string) =>
+    | { ok: true }
+    | { ok: false; error: string };
+  passwordResetTokens: PasswordResetToken[];
 }
 
 const mockUsers: User[] = [
-  { id: '1', name: 'Rameez Hasan', role: 'Employee', email: 'rameez@example.com', team: 'Development', status: 'Available' },
-  { id: '2', name: 'Admin User', role: 'Admin', email: 'admin@example.com', team: 'Management', status: 'Available' },
-  { id: '3', name: 'HR Manager', role: 'HR', email: 'hr@example.com', team: 'HR', status: 'Available' },
-  { id: '4', name: 'Sarah Khan', role: 'Team Leader', email: 'sarah@example.com', team: 'Development', status: 'Available' },
-  { id: '5', name: 'Ali Ahmed', role: 'Employee', email: 'ali@example.com', team: 'Design', status: 'Available' },
-  { id: '6', name: 'New Applicant', role: 'Pending User', email: 'pending@example.com', team: undefined, status: undefined },
+  { id: '1', name: 'Rameez Hasan', role: 'Employee', email: 'rameez@example.com', team: 'Development', status: 'Available', password: 'password123' },
+  { id: '2', name: 'Admin User', role: 'Admin', email: 'admin@example.com', team: 'Management', status: 'Available', password: 'admin123' },
+  { id: '3', name: 'HR Manager', role: 'HR', email: 'hr@example.com', team: 'HR', status: 'Available', password: 'hr123' },
+  { id: '4', name: 'Sarah Khan', role: 'Team Leader', email: 'sarah@example.com', team: 'Development', status: 'Available', password: 'lead123' },
+  { id: '5', name: 'Ali Ahmed', role: 'Employee', email: 'ali@example.com', team: 'Design', status: 'Available', password: 'ali123' },
+  { id: '6', name: 'New Applicant', role: 'Pending User', email: 'pending@example.com', team: undefined, status: undefined, password: 'pending123' },
 ];
 
 export const useStore = create<AppState>()(
@@ -304,6 +334,7 @@ export const useStore = create<AppState>()(
       ],
       leaves: [],
       manualTimeRequests: [],
+      passwordResetTokens: [] as PasswordResetToken[],
       availability: [],
       setCurrentUser: (user) => set({ currentUser: user }),
       
@@ -521,8 +552,8 @@ export const useStore = create<AppState>()(
       approveManualTimeRequest: (requestId) => {
         const { currentUser, manualTimeRequests, timesheets } = get();
         if (!currentUser) return;
-        // Admin can approve manual time requests (creates timesheet)
-        if (currentUser.role !== 'Admin') return;
+        const canReview = currentUser.role === 'Admin' || currentUser.role === 'HR';
+        if (!canReview) return;
 
         const req = manualTimeRequests.find(r => r.id === requestId);
         if (!req || req.status !== 'Pending') return;
@@ -603,8 +634,8 @@ export const useStore = create<AppState>()(
       rejectManualTimeRequest: (requestId, feedback) => {
         const { currentUser, manualTimeRequests } = get();
         if (!currentUser) return;
-        // Admin can reject manual time requests
-        if (currentUser.role !== 'Admin') return;
+        const canReview = currentUser.role === 'Admin' || currentUser.role === 'HR';
+        if (!canReview) return;
 
         const req = manualTimeRequests.find(r => r.id === requestId);
         if (!req || req.status !== 'Pending') return;
@@ -837,8 +868,8 @@ export const useStore = create<AppState>()(
 
       updateLeaveStatus: (leaveId, status) => {
         const { currentUser } = get();
-        // Only Admin can approve/reject leave requests
-        if (!currentUser || currentUser.role !== 'Admin') return;
+        const canReview = currentUser?.role === 'Admin' || currentUser?.role === 'HR';
+        if (!canReview) return;
 
         set((state) => ({
           leaves: state.leaves.map(l => (l.id === leaveId ? { ...l, status } : l)),
@@ -879,35 +910,119 @@ export const useStore = create<AppState>()(
         )
       })),
 
-      registerUser: (name, email) => {
+      registerUser: (input) => {
+        const { name, email, password, phone, department } = input;
+        const trimmedEmail = email.trim().toLowerCase();
+        if (!name.trim() || !trimmedEmail || !password || !phone.trim()) {
+          return { ok: false, error: 'Please fill in all required fields.' };
+        }
+        if (password.length < 6) {
+          return { ok: false, error: 'Password must be at least 6 characters.' };
+        }
+        const { users } = get();
+        if (users.some(u => u.email.toLowerCase() === trimmedEmail)) {
+          return { ok: false, error: 'An account with this email already exists.' };
+        }
         const newUser: User = {
           id: Math.random().toString(36).substring(7),
-          name,
-          email,
+          name: name.trim(),
+          email: trimmedEmail,
           role: 'Pending User',
-          team: undefined,
+          team: department,
           status: undefined,
+          phone: phone.trim(),
+          department,
+          password,
         };
         set((state) => ({ users: [...state.users, newUser] }));
-        return newUser;
+        return { ok: true, user: newUser };
+      },
+
+      loginWithCredentials: (email, password) => {
+        const trimmedEmail = email.trim().toLowerCase();
+        const { users } = get();
+        const user = users.find(u => u.email.toLowerCase() === trimmedEmail);
+        if (!user || !user.password) {
+          return { ok: false, error: 'Invalid email or password.' };
+        }
+        if (user.password !== password) {
+          return { ok: false, error: 'Invalid email or password.' };
+        }
+        return { ok: true, user };
+      },
+
+      requestPasswordReset: (email) => {
+        const trimmedEmail = email.trim().toLowerCase();
+        const { users, passwordResetTokens } = get();
+        const user = users.find(u => u.email.toLowerCase() === trimmedEmail);
+        if (!user) {
+          return { ok: false, error: 'No account found with this email.' };
+        }
+        const token = `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+        const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+        const entry: PasswordResetToken = {
+          id: Math.random().toString(36).substring(7),
+          email: trimmedEmail,
+          token,
+          expiresAt,
+        };
+        const next = passwordResetTokens.filter(t => t.email !== trimmedEmail);
+        set({ passwordResetTokens: [...next, entry] });
+        return { ok: true, token, expiresAt };
+      },
+
+      resetPasswordWithToken: (token, newPassword) => {
+        if (!token || newPassword.length < 6) {
+          return { ok: false, error: 'Password must be at least 6 characters.' };
+        }
+        const { passwordResetTokens, users } = get();
+        const rec = passwordResetTokens.find(t => t.token === token);
+        if (!rec) {
+          return { ok: false, error: 'Invalid or expired reset link.' };
+        }
+        if (new Date(rec.expiresAt).getTime() < Date.now()) {
+          set({ passwordResetTokens: passwordResetTokens.filter(t => t.token !== token) });
+          return { ok: false, error: 'This reset link has expired. Request a new one.' };
+        }
+        const email = rec.email.toLowerCase();
+        set({
+          users: users.map(u =>
+            u.email.toLowerCase() === email ? { ...u, password: newPassword } : u
+          ),
+          passwordResetTokens: passwordResetTokens.filter(t => t.token !== token),
+        });
+        return { ok: true };
       },
     }),
     {
       name: 'gdc-storage',
-      version: 4,
+      version: 5,
       migrate: (persistedState: any) => {
         if (!persistedState) return persistedState;
+
+        const demoPasswords: Record<string, string> = {
+          'rameez@example.com': 'password123',
+          'admin@example.com': 'admin123',
+          'hr@example.com': 'hr123',
+          'sarah@example.com': 'lead123',
+          'ali@example.com': 'ali123',
+          'pending@example.com': 'pending123',
+        };
 
         // Ensure new slices exist.
         const nextState = {
           ...persistedState,
           manualTimeRequests: Array.isArray(persistedState.manualTimeRequests) ? persistedState.manualTimeRequests : [],
+          passwordResetTokens: Array.isArray(persistedState.passwordResetTokens) ? persistedState.passwordResetTokens : [],
           users: Array.isArray(persistedState.users)
-            ? (persistedState.users as any[]).map((u) =>
-                u?.status === 'Holiday'
-                  ? { ...u, status: 'Unavailable' as const }
-                  : u
-              ) as User[]
+            ? (persistedState.users as any[]).map((u) => {
+                const fixedStatus = u?.status === 'Holiday' ? { ...u, status: 'Unavailable' as const } : u;
+                const em = String(fixedStatus?.email || '').toLowerCase();
+                if (!fixedStatus?.password && em && demoPasswords[em]) {
+                  return { ...fixedStatus, password: demoPasswords[em] };
+                }
+                return fixedStatus;
+              }) as User[]
             : persistedState.users,
         };
 
