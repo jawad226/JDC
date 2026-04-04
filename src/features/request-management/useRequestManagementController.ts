@@ -18,7 +18,7 @@ export function useRequestManagementController() {
 
   const [activeTab, setActiveTab] = useState<RequestsHubTab>('leave');
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState<ReviewStatusFilter>('All');
+  const [statusFilter, setStatusFilter] = useState<ReviewStatusFilter>('Pending');
   const [activeRejectId, setActiveRejectId] = useState<string | null>(null);
   const [rejectFeedback, setRejectFeedback] = useState('');
 

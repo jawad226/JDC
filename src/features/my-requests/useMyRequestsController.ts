@@ -11,8 +11,8 @@ export function useMyRequestsController() {
   const { currentUser, leaves, applyLeave, manualTimeRequests, applyManualTimeRequest } = useStore();
 
   const [activeTab, setActiveTab] = useState<RequestsHubTab>('leave');
-  const [leaveStatusFilter, setLeaveStatusFilter] = useState<RequestStatusFilter>('All');
-  const [manualStatusFilter, setManualStatusFilter] = useState<RequestStatusFilter>('All');
+  const [leaveStatusFilter, setLeaveStatusFilter] = useState<RequestStatusFilter>('Pending');
+  const [manualStatusFilter, setManualStatusFilter] = useState<RequestStatusFilter>('Pending');
   const [leaveFormOpen, setLeaveFormOpen] = useState(false);
   const [manualFormOpen, setManualFormOpen] = useState(false);
 

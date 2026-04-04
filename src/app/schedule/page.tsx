@@ -1,10 +1,24 @@
 'use client';
 
-import { Calendar, CheckCircle2, Clock, Plus, X, Check, XCircle, Send, Play } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import {
+  Building2,
+  Briefcase,
+  Calendar,
+  CheckCircle2,
+  Check,
+  ClipboardList,
+  Plus,
+  X,
+  Send,
+  Play,
+  Eye,
+} from 'lucide-react';
+import { useMemo, useState } from 'react';
 import { useStore } from '@/lib/store';
 import type { Task, TaskHistoryEntry, TaskPriority, TaskWorkflowStatus } from '@/lib/store';
 import { format } from 'date-fns';
+
+type StatusFilter = 'All' | TaskWorkflowStatus;
 
 export default function TasksPage() {
   const {
@@ -15,24 +29,16 @@ export default function TasksPage() {
     createTask,
     startTaskWork,
     submitTask,
+    moveTaskToReview,
     approveTask,
-    rejectTask,
   } = useStore();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
-  const [rejectFeedback, setRejectFeedback] = useState('');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('Pending');
 
-  // ─── PERMISSION LOGIC ──────────────────────────────────────────
-  // Tasks can be created by Admin/HR/Team Leader.
-  // Workflow actions are enforced in store methods as well.
   const canCreateTask =
     currentUser?.role === 'Admin' || currentUser?.role === 'HR' || currentUser?.role === 'Team Leader';
 
-  // ─── TASK FILTERING ────────────────────────────────────────────
-  // Admin: see all tasks
-  // HR: see all tasks (they manage across the org)
-  // Team Leader: see only their team's tasks
-  // Employee: see only their own assigned tasks
   const tasks = (() => {
     if (!currentUser) return [];
     if (currentUser.role === 'Admin' || currentUser.role === 'HR') return allTasks;
@@ -40,21 +46,19 @@ export default function TasksPage() {
       const teamMembers = users.filter(u => u.team === currentUser.team);
       return allTasks.filter(t => teamMembers.some(m => m.id === t.assignedTo));
     }
-    // Employee
     return allTasks.filter(t => t.assignedTo === currentUser.id);
   })();
+
+  const filteredTasks = useMemo(() => {
+    const list = statusFilter === 'All' ? tasks : tasks.filter(t => t.status === statusFilter);
+    return [...list].sort((a, b) => new Date(a.deadline).getTime() - new Date(b.deadline).getTime());
+  }, [tasks, statusFilter]);
 
   const selectedTask = useMemo(() => {
     if (!selectedTaskId) return null;
     return allTasks.find(t => t.id === selectedTaskId) || null;
   }, [allTasks, selectedTaskId]);
 
-  useEffect(() => {
-    setRejectFeedback('');
-  }, [selectedTaskId]);
-
-  // ─── ASSIGNABLE USERS ─────────────────────────────────────────
-  // Admin/HR can assign to anyone, Team Leader only to their team
   const assignableUsers = (() => {
     if (!currentUser) return [];
     if (currentUser.role === 'Admin' || currentUser.role === 'HR') {
@@ -66,7 +70,6 @@ export default function TasksPage() {
     return [];
   })();
 
-  // Form state
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [assignedTo, setAssignedTo] = useState('');
@@ -91,14 +94,21 @@ export default function TasksPage() {
     setDeadline('');
   };
 
-  const workflowStatuses: TaskWorkflowStatus[] = ['Pending', 'In Progress', 'Submitted', 'Approved'];
+  const filterOptions: { value: StatusFilter; label: string }[] = [
+    { value: 'Pending', label: 'Pending' },
+    { value: 'All', label: 'All statuses' },
+    { value: 'In Progress', label: 'In Progress' },
+    { value: 'Submitted', label: 'Submitted' },
+    { value: 'Review', label: 'Review' },
+    { value: 'Approved', label: 'Approved' },
+  ];
 
   const statusBadge = (status: string) => {
     if (status === 'Pending') return 'bg-amber-50 text-amber-700 border-amber-100';
     if (status === 'In Progress') return 'bg-blue-50 text-blue-700 border-blue-100';
     if (status === 'Submitted') return 'bg-indigo-50 text-indigo-700 border-indigo-100';
+    if (status === 'Review') return 'bg-violet-50 text-violet-700 border-violet-100';
     if (status === 'Approved') return 'bg-emerald-50 text-emerald-700 border-emerald-100';
-    // History-only label
     if (status === 'Rejected') return 'bg-rose-50 text-rose-700 border-rose-100';
     return 'bg-slate-50 text-slate-700 border-slate-100';
   };
@@ -108,12 +118,18 @@ export default function TasksPage() {
     return [...history].sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
   }, [selectedTask]);
 
-  const latestRejection = useMemo(() => {
-    const history = historyForSelected;
-    return [...history].reverse().find(h => h.action === 'Reject' && h.feedback);
-  }, [historyForSelected]);
-
   const reviewerCanActOnTask = (task: Task | null) => {
+    if (!task || !currentUser) return false;
+    if (task.status !== 'Submitted' && task.status !== 'Review') return false;
+    if (currentUser.role !== 'HR' && currentUser.role !== 'Team Leader') return false;
+    if (currentUser.role === 'Team Leader') {
+      const assignedUser = users.find(u => u.id === task.assignedTo);
+      return !!assignedUser && assignedUser.team === currentUser.team;
+    }
+    return true;
+  };
+
+  const reviewerCanMoveToReview = (task: Task | null) => {
     if (!task || !currentUser) return false;
     if (task.status !== 'Submitted') return false;
     if (currentUser.role !== 'HR' && currentUser.role !== 'Team Leader') return false;
@@ -124,12 +140,27 @@ export default function TasksPage() {
     return true;
   };
 
+  const showWorkflowPanel = useMemo(() => {
+    if (!selectedTask || !currentUser) return false;
+    if (
+      currentUser.role === 'Employee' &&
+      selectedTask.assignedTo === currentUser.id &&
+      (selectedTask.status === 'Pending' ||
+        selectedTask.status === 'In Progress' ||
+        selectedTask.status === 'Review')
+    ) {
+      return true;
+    }
+    if (reviewerCanMoveToReview(selectedTask)) return true;
+    if (reviewerCanActOnTask(selectedTask)) return true;
+    return false;
+  }, [selectedTask, currentUser, users]);
+
   const outsideAvailabilityHint = useMemo(() => {
     if (!selectedTask || !currentUser) return false;
     if (currentUser.role !== 'Employee') return false;
     if (selectedTask.assignedTo !== currentUser.id) return false;
 
-    // Status override is highest priority.
     if (currentUser.status && currentUser.status !== 'Available') return true;
 
     const dayName = format(new Date(selectedTask.deadline), 'EEEE');
@@ -138,93 +169,115 @@ export default function TasksPage() {
     return !dayAvail || !dayAvail.enabled;
   }, [selectedTask, currentUser, availability]);
 
+  const taskRefLabel = (id: string) =>
+    `(TASK-${id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase()})`;
+
   return (
     <div className="max-w-6xl mx-auto">
-      <div className="mb-8 flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-light text-slate-800 tracking-tight flex items-center gap-3">
-            <CheckCircle2 className="w-8 h-8 text-blue-500" />
-            Task Management
-          </h1>
-          <p className="text-slate-500 mt-2">
-            {currentUser?.role === 'Employee'
-              ? 'Work through tasks and submit for HR/Team Leader approval.'
-              : currentUser?.role === 'Team Leader'
-                ? `Review and approve submissions for the ${currentUser?.team} team.`
-                : currentUser?.role === 'HR'
-                  ? 'Review and approve submissions across the organization.'
-                  : 'Monitor task progress and create new tasks.'}
-          </p>
-        </div>
-        {canCreateTask && (
-          <button
-            onClick={() => setIsCreateModalOpen(true)}
-            className="group flex items-center bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition-all shadow-md hover:shadow-lg active:scale-95"
-          >
-            <Plus className="w-4 h-4 mr-2 group-hover:rotate-90 transition-transform" />
-            Create New Task
-          </button>
-        )}
+      <div className="mb-8">
+        <h1 className="text-3xl font-light text-slate-800 tracking-tight flex items-center gap-3">
+          <CheckCircle2 className="w-8 h-8 text-blue-500" />
+          Task Management
+        </h1>
+        <p className="text-slate-500 mt-2">
+          {currentUser?.role === 'Employee'
+            ? 'Work through tasks and submit for HR/Team Leader approval.'
+            : currentUser?.role === 'Team Leader'
+              ? `Review and approve submissions for the ${currentUser?.team} team.`
+              : currentUser?.role === 'HR'
+                ? 'Review and approve submissions across the organization.'
+                : 'Monitor task progress and create new tasks.'}
+        </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {workflowStatuses.map(status => (
-          <div key={status} className="bg-slate-100/50 rounded-2xl p-6 border border-slate-200">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-slate-700">{status}</h2>
-              <span className="text-xs font-bold text-slate-400 bg-white px-2 py-0.5 rounded-lg border border-slate-100">
-                {tasks.filter(t => t.status === status).length}
-              </span>
-            </div>
-            <div className="space-y-4">
-              {tasks.filter(t => t.status === status).map(task => (
-                <div
-                  key={task.id}
-                  className="bg-white p-5 rounded-xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow cursor-pointer group"
-                  onClick={() => setSelectedTaskId(task.id)}
-                >
-                  <div className="flex justify-between items-start mb-2">
-                    <h3 className="font-semibold text-slate-800 group-hover:text-blue-600 transition-colors">{task.title}</h3>
-                    <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded-lg border ${statusBadge(task.status)}`}>
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <h2 className="text-2xl font-bold tracking-tight text-sky-600">Upcoming</h2>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="sr-only" htmlFor="task-status-filter">
+            Filter by status
+          </label>
+          <select
+            id="task-status-filter"
+            value={statusFilter}
+            onChange={e => setStatusFilter(e.target.value as StatusFilter)}
+            className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
+          >
+            {filterOptions.map(o => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          {canCreateTask && (
+            <button
+              type="button"
+              onClick={() => setIsCreateModalOpen(true)}
+              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-blue-700 active:scale-[0.98]"
+            >
+              <Plus className="h-4 w-4" />
+              Add
+            </button>
+          )}
+        </div>
+      </div>
+
+      {filteredTasks.length === 0 ? (
+        <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50/50 py-16 text-center text-slate-500">
+          No tasks match this filter.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {filteredTasks.map(task => {
+            const assignee = users.find(u => u.id === task.assignedTo);
+            const dl = new Date(task.deadline);
+            const deptOrTeam = assignee?.department ?? assignee?.team ?? '—';
+            return (
+              <button
+                key={task.id}
+                type="button"
+                onClick={() => setSelectedTaskId(task.id)}
+                className="group w-full text-left"
+              >
+                <div className="flex h-full w-full overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-md shadow-slate-200/60 transition hover:shadow-lg">
+                  <div className="flex w-[4.5rem] shrink-0 flex-col items-center justify-center bg-slate-100/90 px-2 py-4">
+                    <span className="text-2xl font-semibold leading-none text-sky-600">
+                      {format(dl, 'd')}
+                    </span>
+                    <span className="mt-1 text-xs font-semibold uppercase tracking-wide text-sky-600">
+                      {format(dl, 'MMM')}
+                    </span>
+                  </div>
+                  <div className="min-w-0 flex-1 space-y-2 p-4">
+                    <p className="min-w-0 font-bold leading-snug text-slate-900 group-hover:text-blue-600">
+                      {task.title}
+                    </p>
+                    <span
+                      className={`inline-flex rounded-full border px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${statusBadge(
+                        task.status
+                      )}`}
+                    >
                       {task.status}
                     </span>
-                  </div>
-                  <p className="text-xs text-slate-500 mb-4 line-clamp-2">{task.description}</p>
-                  <div className="flex items-center justify-between mt-auto">
-                    <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded-md ${
-                      task.priority === 'High' ? 'bg-rose-50 text-rose-600 border border-rose-100' :
-                      task.priority === 'Medium' ? 'bg-amber-50 text-amber-600 border border-amber-100' :
-                      'bg-emerald-50 text-emerald-600 border border-emerald-100'
-                    }`}>
-                      {task.priority}
-                    </span>
-                    <span className="flex items-center text-[10px] text-slate-400 font-bold uppercase tracking-wider">
-                      <Calendar className="w-3.5 h-3.5 mr-1" />
-                      {format(new Date(task.deadline), 'MMM d')}
-                    </span>
-                  </div>
-                  <div className="mt-3 pt-3 border-t border-slate-50 flex items-center gap-2">
-                    <div className="h-5 w-5 rounded-full bg-slate-100 flex items-center justify-center text-[10px] font-bold text-slate-500 ring-1 ring-slate-200">
-                      {users.find(u => u.id === task.assignedTo)?.name.charAt(0) || '?'}
-                    </div>
-                    <span className="text-[10px] text-slate-500 font-medium">
-                      {users.find(u => u.id === task.assignedTo)?.name || 'Unassigned'}
-                    </span>
-                    <span className="ml-auto text-[10px] text-blue-500 font-bold uppercase tracking-widest">
-                      View
-                    </span>
+                    <p className="text-xs font-medium text-slate-500">{taskRefLabel(task.id)}</p>
+                    <p className="flex items-center gap-2 text-xs text-slate-600">
+                      <Building2 className="h-4 w-4 shrink-0 text-orange-500" aria-hidden />
+                      <span className="truncate">{deptOrTeam}</span>
+                    </p>
+                    <p className="flex items-center gap-2 text-xs text-slate-600">
+                      <Briefcase className="h-4 w-4 shrink-0 text-orange-500" aria-hidden />
+                      <span className="truncate">{assignee?.role ?? 'Assignee'}</span>
+                    </p>
+                    <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-700">
+                      <Calendar className="h-3.5 w-3.5 text-slate-400" aria-hidden />
+                      Due {format(dl, 'EEE, MMM d')}
+                    </p>
                   </div>
                 </div>
-              ))}
-              {tasks.filter(t => t.status === status).length === 0 && (
-                <div className="text-center py-6 text-slate-400 text-sm border-2 border-dashed border-slate-200 rounded-xl">
-                  No tasks
-                </div>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Create Task Modal */}
       {isCreateModalOpen && (
@@ -295,37 +348,46 @@ export default function TasksPage() {
 
       {/* Task Details Modal */}
       {selectedTask && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-2xl overflow-hidden">
-            <div className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-              <div>
-                <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-                  <ClipboardIcon />
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center sm:items-center p-0 sm:p-4 md:p-6 min-h-0 overflow-y-auto overscroll-contain bg-slate-900/60 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="task-detail-title"
+        >
+          <div className="my-auto flex min-h-0 w-full max-w-2xl max-h-[min(92dvh,56rem)] flex-col overflow-hidden rounded-t-[1.75rem] border border-slate-200/80 bg-white shadow-2xl sm:rounded-[2rem] sm:border-0">
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-100 bg-slate-50/50 px-4 py-4 sm:px-6 sm:py-5 md:px-8">
+              <div className="min-w-0 flex-1">
+                <h2 id="task-detail-title" className="text-lg font-bold text-slate-800 sm:text-xl flex items-center gap-2">
+                  <ClipboardList className="h-5 w-5 shrink-0 text-blue-500" />
                   Task Details
                 </h2>
-                <p className="text-xs text-slate-500 mt-1">
+                <p className="mt-1 text-xs text-slate-500">
                   Assigned to {users.find(u => u.id === selectedTask.assignedTo)?.name || 'Unassigned'}
                 </p>
               </div>
               <button
+                type="button"
                 onClick={() => {
                   setSelectedTaskId(null);
                 }}
-                className="p-2 hover:bg-white rounded-full transition-colors border border-transparent hover:border-slate-100"
+                className="shrink-0 rounded-full border border-transparent p-2 transition-colors hover:border-slate-100 hover:bg-white"
                 title="Close"
               >
-                <X className="w-5 h-5 text-slate-400" />
+                <X className="h-5 w-5 text-slate-400" />
               </button>
             </div>
 
-            <div className="p-8 space-y-6">
-              <div className="space-y-2">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h3 className="text-2xl font-bold text-slate-900">{selectedTask.title}</h3>
-                    <p className="text-slate-600 mt-2 whitespace-pre-wrap">{selectedTask.description}</p>
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 sm:px-6 sm:py-6 md:px-8 md:py-8">
+              <div className="space-y-6">
+              <div className="space-y-3">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+                  <div className="min-w-0 flex-1">
+                    <h3 className="text-xl font-bold leading-snug text-slate-900 sm:text-2xl">{selectedTask.title}</h3>
+                    <p className="mt-2 text-sm leading-relaxed text-slate-600 sm:text-base whitespace-pre-wrap break-words">
+                      {selectedTask.description}
+                    </p>
                   </div>
-                  <div className="flex flex-col items-end gap-2">
+                  <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
                     <span
                       className={`text-[11px] font-bold px-3 py-1 rounded-full border uppercase tracking-wider ${statusBadge(
                         selectedTask.status
@@ -338,21 +400,23 @@ export default function TasksPage() {
                         Outside availability
                       </span>
                     )}
-                    <span className="text-xs text-slate-400 font-bold uppercase tracking-widest flex items-center gap-2">
-                      <Calendar className="w-4 h-4" />
+                    <span className="text-xs font-bold uppercase tracking-widest text-slate-400 flex items-center gap-2">
+                      <Calendar className="h-4 w-4 shrink-0" />
                       Due {format(new Date(selectedTask.deadline), 'MMM d')}
                     </span>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                   <span className="text-[10px] bg-slate-50 border border-slate-100 text-slate-600 font-bold uppercase tracking-widest px-3 py-1 rounded-lg">
                     Priority: {selectedTask.priority}
                   </span>
+                  <span className="text-xs text-slate-500 break-all">{taskRefLabel(selectedTask.id)}</span>
                 </div>
               </div>
 
-              <div className="bg-slate-50 border border-slate-100 rounded-[1.5rem] p-5 space-y-4">
+              {showWorkflowPanel && (
+              <div className="bg-slate-50 border border-slate-100 rounded-[1.5rem] p-4 sm:p-5 space-y-4">
                 <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                   <h4 className="text-sm font-bold text-slate-800">Workflow Actions</h4>
                   <div className="flex flex-wrap gap-2">
@@ -373,11 +437,15 @@ export default function TasksPage() {
 
                     {currentUser?.role === 'Employee' &&
                       selectedTask.assignedTo === currentUser.id &&
-                      selectedTask.status === 'In Progress' && (
+                      (selectedTask.status === 'In Progress' || selectedTask.status === 'Review') && (
                         <button
                           onClick={() => {
                             submitTask(selectedTask.id);
-                            alert('Task submitted. Waiting for approval.');
+                            alert(
+                              selectedTask.status === 'Review'
+                                ? 'Resubmitted. Waiting for approval.'
+                                : 'Task submitted. Waiting for approval.'
+                            );
                           }}
                           className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all active:scale-95 flex items-center gap-2"
                         >
@@ -386,76 +454,37 @@ export default function TasksPage() {
                         </button>
                       )}
 
-                    {reviewerCanActOnTask(selectedTask) && (
-                      <>
-                        <button
-                          onClick={() => {
-                            approveTask(selectedTask.id);
-                            alert('Approved. Task marked as Approved.');
-                            setSelectedTaskId(null);
-                          }}
-                          className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all active:scale-95 flex items-center gap-2"
-                        >
-                          <Check className="w-4 h-4" />
-                          Approve
-                        </button>
+                    {reviewerCanMoveToReview(selectedTask) && (
+                      <button
+                        onClick={() => {
+                          moveTaskToReview(selectedTask.id);
+                          alert('Task moved to Review.');
+                        }}
+                        className="bg-violet-600 hover:bg-violet-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all active:scale-95 flex items-center gap-2"
+                      >
+                        <Eye className="w-4 h-4" />
+                        Send to Review
+                      </button>
+                    )}
 
-                        <button
-                          onClick={() => {
-                            const trimmed = rejectFeedback.trim();
-                            if (!trimmed) {
-                              alert('Feedback is required to reject.');
-                              const el = document.getElementById('rejectFeedback');
-                              if (el) el.focus();
-                              return;
-                            }
-                            rejectTask(selectedTask.id, trimmed);
-                            alert('Rejected. Task returned to In Progress.');
-                            setSelectedTaskId(null);
-                          }}
-                          className="bg-rose-50 hover:bg-rose-100 text-rose-700 px-4 py-2 rounded-xl text-sm font-bold transition-all active:scale-95 border border-rose-100 flex items-center gap-2"
-                        >
-                          <XCircle className="w-4 h-4" />
-                          Reject
-                        </button>
-                      </>
+                    {reviewerCanActOnTask(selectedTask) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          approveTask(selectedTask.id);
+                          alert('Approved. Task marked as Approved.');
+                          setSelectedTaskId(null);
+                        }}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all active:scale-95 flex items-center gap-2"
+                      >
+                        <Check className="w-4 h-4" />
+                        Approve
+                      </button>
                     )}
                   </div>
                 </div>
-
-                {reviewerCanActOnTask(selectedTask) && (
-                  <div className="space-y-3">
-                    <label htmlFor="rejectFeedback" className="block text-xs font-bold text-slate-400 uppercase tracking-widest">
-                      Rejection Feedback (required)
-                    </label>
-                    <textarea
-                      id="rejectFeedback"
-                      value={rejectFeedback}
-                      onChange={(e) => setRejectFeedback(e.target.value)}
-                      rows={4}
-                      className="w-full rounded-2xl border border-slate-100 bg-white p-3.5 text-slate-700 focus:ring-4 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all"
-                      placeholder="Provide specific feedback for rework..."
-                    />
-                  </div>
-                )}
-
-                {latestRejection && (
-                  <div className="bg-white border border-slate-100 rounded-[1.25rem] p-4">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-bold text-slate-800">Latest Rejection Feedback</p>
-                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">
-                          {format(new Date(latestRejection.at), 'MMM d, HH:mm')}
-                        </p>
-                      </div>
-                      <span className={`text-[10px] font-bold px-3 py-1 rounded-full border uppercase tracking-wider ${statusBadge('Rejected')}`}>
-                        Rejected
-                      </span>
-                    </div>
-                    <p className="text-sm text-slate-700 mt-3 whitespace-pre-wrap">{latestRejection.feedback}</p>
-                  </div>
-                )}
               </div>
+              )}
               <div className="space-y-3">
                 <h4 className="text-sm font-bold text-slate-800">Task History</h4>
                 {historyForSelected.length === 0 ? (
@@ -497,41 +526,11 @@ export default function TasksPage() {
                   </div>
                 )}
               </div>
+              </div>
             </div>
           </div>
         </div>
       )}
     </div>
-  );
-}
-
-function ClipboardIcon() {
-  return (
-    <svg
-      className="w-5 h-5 text-blue-500"
-      viewBox="0 0 24 24"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden="true"
-    >
-      <path
-        d="M8 3H9.5C9.78 3 10 3.22 10 3.5V4H14V3.5C14 3.22 14.22 3 14.5 3H16C16.55 3 17 3.45 17 4V5H18C19.1 5 20 5.9 20 7V19C20 20.1 19.1 21 18 21H6C4.9 21 4 20.1 4 19V7C4 5.9 4.9 5 6 5H7V4C7 3.45 7.45 3 8 3Z"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M8 9H16"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-      <path
-        d="M8 13H14"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-    </svg>
   );
 }

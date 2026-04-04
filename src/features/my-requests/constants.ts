@@ -2,8 +2,8 @@ import type { RequestStatusFilter } from './types';
 
 /** Shared labels; tab (Leave vs Manual) already provides context. */
 export const STATUS_FILTER_OPTIONS: { value: RequestStatusFilter; label: string }[] = [
-  { value: 'All', label: 'All' },
   { value: 'Pending', label: 'Pending' },
+  { value: 'All', label: 'All' },
   { value: 'Approved', label: 'Approved' },
   { value: 'Rejected', label: 'Rejected' },
 ];

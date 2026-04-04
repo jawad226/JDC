@@ -16,6 +16,12 @@ export interface User {
   status?: 'Available' | 'Unavailable' | 'Sick';
   phone?: string;
   department?: Department;
+  /** National ID (demo). */
+  cnic?: string;
+  /** Full address (demo). */
+  address?: string;
+  /** HR / employee unique code shown as “Unique ID” (falls back to `id` in UI if unset). */
+  employeeCode?: string;
   /** Demo-only stored credential; do not render in admin lists. */
   password?: string;
 }
@@ -46,8 +52,19 @@ export interface BreakEntry {
 
 export type TaskPriority = 'Low' | 'Medium' | 'High';
 
-export type TaskWorkflowStatus = 'Pending' | 'In Progress' | 'Submitted' | 'Approved';
-export type TaskHistoryAction = 'Created' | 'Start Work' | 'Submit' | 'Approve' | 'Reject';
+export type TaskWorkflowStatus =
+  | 'Pending'
+  | 'In Progress'
+  | 'Submitted'
+  | 'Review'
+  | 'Approved';
+export type TaskHistoryAction =
+  | 'Created'
+  | 'Start Work'
+  | 'Submit'
+  | 'Send to Review'
+  | 'Approve'
+  | 'Reject';
 
 export interface TaskHistoryEntry {
   id: string;
@@ -157,8 +174,9 @@ interface AppState {
   }) => void;
   startTaskWork: (taskId: string) => void;
   submitTask: (taskId: string) => void;
+  /** HR/TL: move a submitted task into the Review step before final approval. */
+  moveTaskToReview: (taskId: string) => void;
   approveTask: (taskId: string) => void;
-  rejectTask: (taskId: string, feedback: string) => void;
   addTaskComment: (taskId: string, comment: string) => void;
   // Leaves
   applyLeave: (leave: Omit<LeaveRequest, 'id' | 'status' | 'createdAt'>) => void;
@@ -204,12 +222,86 @@ interface AppState {
 }
 
 const mockUsers: User[] = [
-  { id: '1', name: 'Rameez Hasan', role: 'Employee', email: 'rameez@example.com', team: 'Development', status: 'Available', password: 'password123' },
-  { id: '2', name: 'Admin User', role: 'Admin', email: 'admin@example.com', team: 'Management', status: 'Available', password: 'admin123' },
-  { id: '3', name: 'HR Manager', role: 'HR', email: 'hr@example.com', team: 'HR', status: 'Available', password: 'hr123' },
-  { id: '4', name: 'Sarah Khan', role: 'Team Leader', email: 'sarah@example.com', team: 'Development', status: 'Available', password: 'lead123' },
-  { id: '5', name: 'Ali Ahmed', role: 'Employee', email: 'ali@example.com', team: 'Design', status: 'Available', password: 'ali123' },
-  { id: '6', name: 'New Applicant', role: 'Pending User', email: 'pending@example.com', team: undefined, status: undefined, password: 'pending123' },
+  {
+    id: '1',
+    name: 'Rameez Hasan',
+    role: 'Employee',
+    email: 'rameez@example.com',
+    team: 'Development',
+    department: 'MERN Stack',
+    status: 'Available',
+    phone: '+92 300 1234567',
+    cnic: '35202-1234567-1',
+    address: 'House 12, Street 4, DHA Phase 5, Lahore',
+    employeeCode: 'GDC-EMP-001',
+    password: 'password123',
+  },
+  {
+    id: '2',
+    name: 'Admin User',
+    role: 'Admin',
+    email: 'admin@example.com',
+    team: 'Management',
+    department: 'Web Development',
+    status: 'Available',
+    phone: '+92 300 0000001',
+    cnic: '35202-0000000-2',
+    address: 'Head Office, Karachi',
+    employeeCode: 'GDC-ADM-001',
+    password: 'admin123',
+  },
+  {
+    id: '3',
+    name: 'HR Manager',
+    role: 'HR',
+    email: 'hr@example.com',
+    team: 'HR',
+    department: 'Web Development',
+    status: 'Available',
+    phone: '+92 300 0000002',
+    cnic: '35202-0000000-3',
+    address: 'HR Block, Lahore',
+    employeeCode: 'GDC-HR-001',
+    password: 'hr123',
+  },
+  {
+    id: '4',
+    name: 'Sarah Khan',
+    role: 'Team Leader',
+    email: 'sarah@example.com',
+    team: 'Development',
+    department: 'MERN Stack',
+    status: 'Available',
+    phone: '+92 300 0000003',
+    cnic: '35202-0000000-4',
+    address: 'Model Town, Lahore',
+    employeeCode: 'GDC-TL-001',
+    password: 'lead123',
+  },
+  {
+    id: '5',
+    name: 'Ali Ahmed',
+    role: 'Employee',
+    email: 'ali@example.com',
+    team: 'Design',
+    department: 'Web Design',
+    status: 'Available',
+    phone: '+92 300 0000004',
+    cnic: '35202-0000000-5',
+    address: 'Gulberg III, Lahore',
+    employeeCode: 'GDC-EMP-002',
+    password: 'ali123',
+  },
+  {
+    id: '6',
+    name: 'New Applicant',
+    role: 'Pending User',
+    email: 'pending@example.com',
+    team: undefined,
+    status: undefined,
+    phone: '+92 300 0000005',
+    password: 'pending123',
+  },
 ];
 
 export const useStore = create<AppState>()(
@@ -248,7 +340,7 @@ export const useStore = create<AppState>()(
           description: 'Technical review of the new digital care architecture',
           assignedTo: '1',
           assignedBy: '3',
-          status: 'Submitted',
+          status: 'Review',
           priority: 'Medium',
           deadline: new Date(Date.now() + 86400000 * 4).toISOString(),
           comments: [],
@@ -279,6 +371,15 @@ export const useStore = create<AppState>()(
               fromStatus: 'In Progress',
               toStatus: 'Submitted',
               action: 'Submit',
+            },
+            {
+              id: Math.random().toString(36).substring(7),
+              at: new Date(Date.now() + 1000 * 60 * 25).toISOString(),
+              actorId: '3',
+              actorRole: 'HR',
+              fromStatus: 'Submitted',
+              toStatus: 'Review',
+              action: 'Send to Review',
             },
           ],
         },
@@ -737,7 +838,9 @@ export const useStore = create<AppState>()(
         const task = tasks.find(t => t.id === taskId);
         if (!task) return;
         if (task.assignedTo !== currentUser.id) return;
-        if (task.status !== 'In Progress') return;
+        if (task.status !== 'In Progress' && task.status !== 'Review') return;
+
+        const fromStatus = task.status;
 
         set((state) => ({
           tasks: state.tasks.map(t => {
@@ -748,11 +851,42 @@ export const useStore = create<AppState>()(
               at: nowIso,
               actorId: currentUser.id,
               actorRole: currentUser.role,
-              fromStatus: 'In Progress',
+              fromStatus,
               toStatus: 'Submitted',
               action: 'Submit',
             };
             return { ...t, status: 'Submitted', history: [...(t.history || []), entry] };
+          }),
+        }));
+      },
+
+      moveTaskToReview: (taskId) => {
+        const { currentUser, tasks, users } = get();
+        if (!currentUser || (currentUser.role !== 'HR' && currentUser.role !== 'Team Leader')) return;
+
+        const task = tasks.find(t => t.id === taskId);
+        if (!task) return;
+        if (task.status !== 'Submitted') return;
+
+        if (currentUser.role === 'Team Leader') {
+          const assignedUser = users.find(u => u.id === task.assignedTo);
+          if (!assignedUser || assignedUser.team !== currentUser.team) return;
+        }
+
+        set((state) => ({
+          tasks: state.tasks.map(t => {
+            if (t.id !== taskId) return t;
+            const nowIso = new Date().toISOString();
+            const entry: TaskHistoryEntry = {
+              id: Math.random().toString(36).substring(7),
+              at: nowIso,
+              actorId: currentUser.id,
+              actorRole: currentUser.role,
+              fromStatus: 'Submitted',
+              toStatus: 'Review',
+              action: 'Send to Review',
+            };
+            return { ...t, status: 'Review', history: [...(t.history || []), entry] };
           }),
         }));
       },
@@ -763,13 +897,15 @@ export const useStore = create<AppState>()(
 
         const task = tasks.find(t => t.id === taskId);
         if (!task) return;
-        if (task.status !== 'Submitted') return;
+        if (task.status !== 'Submitted' && task.status !== 'Review') return;
 
         // Team Leader can only approve tasks from their team
         if (currentUser.role === 'Team Leader') {
           const assignedUser = users.find(u => u.id === task.assignedTo);
           if (!assignedUser || assignedUser.team !== currentUser.team) return;
         }
+
+        const fromStatus = task.status;
 
         set((state) => ({
           tasks: state.tasks.map(t => {
@@ -780,7 +916,7 @@ export const useStore = create<AppState>()(
               at: nowIso,
               actorId: currentUser.id,
               actorRole: currentUser.role,
-              fromStatus: 'Submitted',
+              fromStatus,
               toStatus: 'Approved',
               action: 'Approve',
             };
@@ -789,42 +925,6 @@ export const useStore = create<AppState>()(
         }));
       },
 
-      rejectTask: (taskId, feedback) => {
-        const { currentUser, tasks, users } = get();
-        if (!currentUser || (currentUser.role !== 'HR' && currentUser.role !== 'Team Leader')) return;
-
-        const task = tasks.find(t => t.id === taskId);
-        if (!task) return;
-        if (task.status !== 'Submitted') return;
-
-        // Team Leader can only reject tasks from their team
-        if (currentUser.role === 'Team Leader') {
-          const assignedUser = users.find(u => u.id === task.assignedTo);
-          if (!assignedUser || assignedUser.team !== currentUser.team) return;
-        }
-
-        const trimmed = feedback.trim();
-        if (!trimmed) return;
-
-        set((state) => ({
-          tasks: state.tasks.map(t => {
-            if (t.id !== taskId) return t;
-            const nowIso = new Date().toISOString();
-            const entry: TaskHistoryEntry = {
-              id: Math.random().toString(36).substring(7),
-              at: nowIso,
-              actorId: currentUser.id,
-              actorRole: currentUser.role,
-              fromStatus: 'Submitted',
-              toStatus: 'In Progress',
-              action: 'Reject',
-              feedback: trimmed,
-            };
-            return { ...t, status: 'In Progress', history: [...(t.history || []), entry] };
-          }),
-        }));
-      },
-      
       addTaskComment: (taskId, commentText) => {
         const { currentUser } = get();
         if (!currentUser) return;
@@ -892,9 +992,13 @@ export const useStore = create<AppState>()(
         users: state.users.filter(u => u.id !== userId)
       })),
 
-      updateUser: (userId, updates) => set((state) => ({
-        users: state.users.map(u => u.id === userId ? { ...u, ...updates } : u)
-      })),
+      updateUser: (userId, updates) =>
+        set((state) => {
+          const users = state.users.map((u) => (u.id === userId ? { ...u, ...updates } : u));
+          const currentUser =
+            state.currentUser?.id === userId ? { ...state.currentUser, ...updates } : state.currentUser;
+          return { users, currentUser };
+        }),
 
       addTeam: (name) => set((state) => ({
         teams: state.teams.includes(name) ? state.teams : [...state.teams, name]
@@ -996,7 +1100,7 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'gdc-storage',
-      version: 5,
+      version: 6,
       migrate: (persistedState: any) => {
         if (!persistedState) return persistedState;
 
@@ -1018,10 +1122,22 @@ export const useStore = create<AppState>()(
             ? (persistedState.users as any[]).map((u) => {
                 const fixedStatus = u?.status === 'Holiday' ? { ...u, status: 'Unavailable' as const } : u;
                 const em = String(fixedStatus?.email || '').toLowerCase();
-                if (!fixedStatus?.password && em && demoPasswords[em]) {
-                  return { ...fixedStatus, password: demoPasswords[em] };
+                const mock = mockUsers.find((m) => m.email.toLowerCase() === em);
+                const merged =
+                  mock && mock.email.toLowerCase() === em
+                    ? {
+                        ...fixedStatus,
+                        department: fixedStatus?.department ?? mock.department,
+                        phone: fixedStatus?.phone ?? mock.phone,
+                        cnic: fixedStatus?.cnic ?? mock.cnic,
+                        address: fixedStatus?.address ?? mock.address,
+                        employeeCode: fixedStatus?.employeeCode ?? mock.employeeCode,
+                      }
+                    : fixedStatus;
+                if (!merged?.password && em && demoPasswords[em]) {
+                  return { ...merged, password: demoPasswords[em] };
                 }
-                return fixedStatus;
+                return merged;
               }) as User[]
             : persistedState.users,
         };
@@ -1032,9 +1148,20 @@ export const useStore = create<AppState>()(
         const users: User[] = nextState.users || mockUsers;
         const roleById = new Map<string, Role>(users.map(u => [u.id, u.role]));
 
+        const validStatuses: TaskWorkflowStatus[] = [
+          'Pending',
+          'In Progress',
+          'Submitted',
+          'Review',
+          'Approved',
+        ];
+
         const migratedTasks = (nextState.tasks as any[]).map((t) => {
-          const status: TaskWorkflowStatus =
+          let status: TaskWorkflowStatus =
             t.status === 'Completed' ? 'Approved' : t.status;
+          if (!validStatuses.includes(status)) {
+            status = 'Pending';
+          }
 
           const history: TaskHistoryEntry[] | undefined = Array.isArray(t.history)
             ? t.history

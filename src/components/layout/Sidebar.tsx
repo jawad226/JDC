@@ -16,7 +16,7 @@ import {
   UsersRound,
   HelpCircle,
   LogOut,
-  ShieldCheck
+  ShieldCheck,
 } from 'lucide-react';
 
 const sidebarItems = [
@@ -39,7 +39,7 @@ export function Sidebar() {
   const router = useRouter();
   const { setCurrentUser, currentUser } = useStore();
 
-  const filteredSidebarItems = sidebarItems.filter(item => {
+  const filteredSidebarItems = sidebarItems.filter((item) => {
     if (item.name === 'Admin Control' && currentUser?.role !== 'Admin') return false;
     if (item.name === 'My Requests' && currentUser?.role === 'Admin') return false;
     if (item.name === 'Request Management' && currentUser?.role === 'Employee') return false;

@@ -18,9 +18,9 @@ export function middleware(request: NextRequest) {
   ];
   const isPublicAuth = publicAuthPaths.includes(pathname) || pathname === '/auth';
 
-  // Pending User: can ONLY access /pending (before generic auth redirects)
+  // Pending User: /pending home; also allow read-only /profile
   if (role === 'Pending User') {
-    if (pathname !== '/pending') {
+    if (pathname !== '/pending' && pathname !== '/profile') {
       return NextResponse.redirect(new URL('/pending', request.url));
     }
     return NextResponse.next();
