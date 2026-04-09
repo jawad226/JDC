@@ -12,11 +12,30 @@ import {
   ChevronDown,
   Menu,
 } from 'lucide-react';
-import { useStore, useShallow } from '@/lib/store';
+import { useStore, useShallow, type User } from '@/lib/store';
 import { cn } from '@/lib/utils';
 import { AttendanceLogPagination } from '@/components/attendance/attendanceLogUi';
 
-const SITE_ALL = 'All';
+const DEPT_ALL = 'All';
+const TEAM_ALL = 'All';
+
+/** Department filter labels (matches `department` / `workSite` on users). */
+const DEPARTMENT_OPTIONS = [
+  'Frontend',
+  'Backend',
+  'MERN Stack',
+  'Full Stack',
+  'SEO',
+  'WordPress',
+  'Digital Marketing',
+] as const;
+
+function matchesDepartmentFilter(u: User, filter: string): boolean {
+  if (filter === DEPT_ALL) return true;
+  const f = filter.trim().toLowerCase();
+  const pool = [u.department, u.workSite].filter(Boolean).map((s) => String(s).toLowerCase());
+  return pool.some((p) => p === f || p.includes(f) || f.includes(p));
+}
 
 function initials(name: string) {
   const p = name.trim().split(/\s+/).filter(Boolean);
@@ -29,8 +48,6 @@ export default function TeamAssignTLPage() {
   const {
     users,
     teams,
-    sites,
-    addSite,
     configureTeamAssignment,
     setTeamLeaderForTeam,
     removeUserFromTeamRoster,
@@ -41,8 +58,6 @@ export default function TeamAssignTLPage() {
     useShallow((s) => ({
       users: s.users,
       teams: s.teams,
-      sites: s.sites,
-      addSite: s.addSite,
       configureTeamAssignment: s.configureTeamAssignment,
       setTeamLeaderForTeam: s.setTeamLeaderForTeam,
       removeUserFromTeamRoster: s.removeUserFromTeamRoster,
@@ -52,7 +67,8 @@ export default function TeamAssignTLPage() {
     }))
   );
 
-  const [siteFilter, setSiteFilter] = useState(SITE_ALL);
+  const [departmentFilter, setDepartmentFilter] = useState(DEPT_ALL);
+  const [teamNameFilter, setTeamNameFilter] = useState(TEAM_ALL);
   const [selectedLeaderId, setSelectedLeaderId] = useState('');
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
@@ -63,8 +79,8 @@ export default function TeamAssignTLPage() {
   const [leaderId, setLeaderId] = useState('');
   const [selectedEmployees, setSelectedEmployees] = useState<Set<string>>(() => new Set());
   const [modalTeamName, setModalTeamName] = useState('');
-  const [siteName, setSiteName] = useState('');
-  const [newSiteDraft, setNewSiteDraft] = useState('');
+  /** Stored on users as `workSite` (used for dept filters); label is department. */
+  const [departmentName, setDepartmentName] = useState('');
 
   const [addToTeamIds, setAddToTeamIds] = useState<Set<string>>(() => new Set());
 
@@ -73,13 +89,23 @@ export default function TeamAssignTLPage() {
     [users]
   );
 
+  const teamNameOptions = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of teams) s.add(t);
+    for (const u of users) {
+      if (u.team) s.add(u.team);
+    }
+    return [...s].sort((a, b) => a.localeCompare(b));
+  }, [teams, users]);
+
   const teamLeaderOptions = useMemo(() => {
     return users.filter((u) => {
       if (u.role !== 'Team Leader' || !u.team) return false;
-      if (siteFilter !== SITE_ALL && u.workSite !== siteFilter) return false;
+      if (!matchesDepartmentFilter(u, departmentFilter)) return false;
+      if (teamNameFilter !== TEAM_ALL && u.team !== teamNameFilter) return false;
       return true;
     });
-  }, [users, siteFilter]);
+  }, [users, departmentFilter, teamNameFilter]);
 
   useEffect(() => {
     if (!selectedLeaderId) return;
@@ -144,7 +170,7 @@ export default function TeamAssignTLPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [selectedLeaderId, siteFilter]);
+  }, [selectedLeaderId, departmentFilter, teamNameFilter]);
 
   const otherTeams = useMemo(
     () => teams.filter((t) => t !== selectedTeam),
@@ -161,8 +187,9 @@ export default function TeamAssignTLPage() {
     setLeaderId('');
     setSelectedEmployees(new Set());
     setModalTeamName(selectedTeam || '');
-    setSiteName(siteFilter !== SITE_ALL ? siteFilter : '');
-    setNewSiteDraft('');
+    const ws = selectedLeader?.workSite?.trim();
+    const opts = DEPARTMENT_OPTIONS as readonly string[];
+    setDepartmentName(ws && opts.includes(ws) ? ws : DEPARTMENT_OPTIONS[0]);
     setModalOpen(true);
   };
 
@@ -176,27 +203,18 @@ export default function TeamAssignTLPage() {
       teamName: tn,
       leaderUserId: leaderId,
       employeeIds: [...selectedEmployees],
-      siteName,
+      siteName: departmentName,
     });
     if (result.ok) {
       setMessage({ type: 'ok', text: 'Team roster saved successfully.' });
       const newLeader = useStore.getState().users.find((u) => u.id === leaderId);
       if (newLeader) setSelectedLeaderId(newLeader.id);
-      setSiteFilter(newLeader?.workSite || SITE_ALL);
+      if (newLeader?.team) setTeamNameFilter(newLeader.team);
       closeModal();
       setSelectedEmployees(new Set());
     } else {
       setMessage({ type: 'err', text: result.error });
     }
-  };
-
-  const handleAddSite = () => {
-    const t = newSiteDraft.trim();
-    if (!t) return;
-    addSite(t);
-    setSiteName(t);
-    setNewSiteDraft('');
-    setMessage({ type: 'ok', text: `Site “${t}” added and selected.` });
   };
 
   const toggleEmployee = (id: string) => {
@@ -239,30 +257,51 @@ export default function TeamAssignTLPage() {
         </div>
 
         {/* Filter bar + primary action */}
-        <div className="mb-6 flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-end sm:justify-between">
-          <div className="flex flex-1 flex-wrap items-end gap-3">
-            <label className="flex min-w-[160px] flex-1 flex-col gap-1.5 text-xs font-semibold text-slate-600">
-              Site name
+        <div className="mb-6 flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:flex-row lg:items-end lg:justify-between">
+          <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <label className="flex min-w-0 flex-col gap-1.5 text-xs font-semibold text-slate-600">
+              Department name
               <div className="relative">
                 <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <select
-                  value={siteFilter}
+                  value={departmentFilter}
                   onChange={(e) => {
-                    setSiteFilter(e.target.value);
+                    setDepartmentFilter(e.target.value);
                     setMessage(null);
                   }}
                   className="w-full appearance-none rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-3 pr-9 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-100"
                 >
-                  <option value={SITE_ALL}>All sites</option>
-                  {sites.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
+                  <option value={DEPT_ALL}>All departments</option>
+                  {DEPARTMENT_OPTIONS.map((d) => (
+                    <option key={d} value={d}>
+                      {d}
                     </option>
                   ))}
                 </select>
               </div>
             </label>
-            <label className="flex min-w-[200px] flex-1 flex-col gap-1.5 text-xs font-semibold text-slate-600">
+            <label className="flex min-w-0 flex-col gap-1.5 text-xs font-semibold text-slate-600">
+              Team name
+              <div className="relative">
+                <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <select
+                  value={teamNameFilter}
+                  onChange={(e) => {
+                    setTeamNameFilter(e.target.value);
+                    setMessage(null);
+                  }}
+                  className="w-full appearance-none rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-3 pr-9 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-100"
+                >
+                  <option value={TEAM_ALL}>All teams</option>
+                  {teamNameOptions.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </label>
+            <label className="flex min-w-0 flex-col gap-1.5 text-xs font-semibold text-slate-600 sm:col-span-2 lg:col-span-1">
               Team Leader name
               <div className="relative">
                 <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -305,8 +344,9 @@ export default function TeamAssignTLPage() {
               Team: <strong className="text-slate-900">{selectedTeam}</strong>
             </span>
             <span className="inline-flex items-center gap-1.5 text-slate-500">
-              <Building2 className="h-4 w-4" />
-              {selectedLeader.workSite || '—'}
+              <Building2 className="h-4 w-4 shrink-0" />
+              <span className="text-slate-400">Dept.</span>{' '}
+              <span className="font-medium text-slate-700">{selectedLeader.workSite || '—'}</span>
             </span>
           </div>
         ) : null}
@@ -321,7 +361,7 @@ export default function TeamAssignTLPage() {
                   <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide">Name</th>
                   <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide">Email</th>
                   <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide">Team</th>
-                  <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide">Site</th>
+                  <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide">Department</th>
                   <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide">Role</th>
                   <th className="px-4 py-3 text-right text-xs font-bold uppercase tracking-wide">Actions</th>
                 </tr>
@@ -331,7 +371,8 @@ export default function TeamAssignTLPage() {
                   <tr>
                     <td colSpan={7} className="px-4 py-16 text-center text-slate-500">
                       <Users className="mx-auto mb-3 h-10 w-10 text-slate-300" />
-                      Select a <strong>site</strong> (optional) and <strong>team leader</strong> to load their team.
+                      Use <strong>Department</strong> / <strong>Team name</strong> (optional), then choose a{' '}
+                      <strong>team leader</strong> to load their roster.
                     </td>
                   </tr>
                 ) : pagedRows.length === 0 ? (
@@ -459,7 +500,7 @@ export default function TeamAssignTLPage() {
         {selectedTeam && selectedLeader ? (
           <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <h3 className="text-sm font-bold text-slate-900">Add employees to “{selectedTeam}”</h3>
-            <p className="mt-1 text-xs text-slate-500">Unassigned employees only; site follows the team leader.</p>
+            <p className="mt-1 text-xs text-slate-500">Unassigned employees only; department follows the team leader.</p>
             <div className="mt-3 flex max-h-40 flex-wrap gap-2 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/50 p-2">
               {employeesWithoutTeam.length === 0 ? (
                 <span className="text-xs text-slate-500">No unassigned employees.</span>
@@ -603,31 +644,22 @@ export default function TeamAssignTLPage() {
               </div>
 
               <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Site</span>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Department</span>
+                <p className="mt-1 text-xs text-slate-600">
+                  Applies to the team leader and selected employees (shown in filters as department / location).
+                </p>
                 <select
                   required
-                  value={siteName}
-                  onChange={(e) => setSiteName(e.target.value)}
-                  className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm"
+                  value={departmentName}
+                  onChange={(e) => setDepartmentName(e.target.value)}
+                  className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-800"
                 >
-                  <option value="">Select…</option>
-                  {sites.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
+                  {DEPARTMENT_OPTIONS.map((d) => (
+                    <option key={d} value={d}>
+                      {d}
                     </option>
                   ))}
                 </select>
-                <div className="mt-2 flex gap-2">
-                  <input
-                    value={newSiteDraft}
-                    onChange={(e) => setNewSiteDraft(e.target.value)}
-                    placeholder="New site"
-                    className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                  />
-                  <button type="button" onClick={handleAddSite} className="rounded-lg bg-blue-100 px-3 py-2 text-xs font-semibold text-blue-900">
-                    Add
-                  </button>
-                </div>
               </div>
 
               <button

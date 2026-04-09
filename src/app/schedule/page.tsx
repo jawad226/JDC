@@ -14,6 +14,10 @@ import {
   Eye,
   Trash2,
   Pencil,
+  ListTodo,
+  UserRound,
+  CalendarDays,
+  AlignLeft,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useStore, useShallow } from '@/lib/store';
@@ -282,7 +286,7 @@ export default function TasksPage() {
             className="inline-flex w-fit items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-blue-700 active:scale-[0.98]"
           >
             <Plus className="h-4 w-4" />
-            Add
+            New task
           </button>
         )}
       </div>
@@ -377,75 +381,181 @@ export default function TasksPage() {
 
       {/* Create / Edit Task Modal */}
       {(isCreateModalOpen || editTaskId) && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-md overflow-hidden">
-            <div className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-              <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-                {editTaskId ? (
-                  <>
-                    <Pencil className="w-5 h-5 text-blue-500" />
-                    Edit Task
-                  </>
-                ) : (
-                  <>
-                    <Plus className="w-5 h-5 text-blue-500" />
-                    New Task
-                  </>
-                )}
-              </h2>
-              <button onClick={closeTaskFormModal} className="p-2 hover:bg-white rounded-full transition-colors border border-transparent hover:border-slate-100">
-                <X className="w-5 h-5 text-slate-400" />
-              </button>
+        <div
+          className="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/65 p-0 backdrop-blur-[3px] sm:items-center sm:p-4"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeTaskFormModal();
+          }}
+        >
+          <div
+            className="flex max-h-[min(92dvh,640px)] w-full max-w-lg flex-col overflow-hidden rounded-t-[1.75rem] border border-slate-200/90 bg-white shadow-[0_25px_50px_-12px_rgba(15,23,42,0.35)] sm:rounded-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="task-form-modal-title"
+          >
+            <div className="relative shrink-0 border-b border-slate-800/10 bg-gradient-to-r from-slate-900 via-slate-800 to-blue-950 px-5 py-5 sm:px-6 sm:py-6">
+              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_80%_80%_at_100%_0%,rgba(59,130,246,0.15),transparent)]" />
+              <div className="relative flex items-start justify-between gap-4">
+                <div className="flex min-w-0 items-start gap-3">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/10 text-white shadow-inner ring-1 ring-white/20">
+                    {editTaskId ? (
+                      <Pencil className="h-5 w-5" strokeWidth={2} aria-hidden />
+                    ) : (
+                      <Plus className="h-5 w-5" strokeWidth={2.5} aria-hidden />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <h2 id="task-form-modal-title" className="text-lg font-bold tracking-tight text-white sm:text-xl">
+                      {editTaskId ? 'Edit task' : 'New task'}
+                    </h2>
+                    <p className="mt-0.5 text-sm text-slate-300">
+                      {editTaskId ? 'Update details before work starts.' : 'Define scope, assign owner, and set a due date.'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeTaskFormModal}
+                  className="shrink-0 rounded-xl border border-white/10 bg-white/5 p-2 text-slate-200 transition hover:bg-white/10 hover:text-white"
+                  aria-label="Close"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
             </div>
 
-            <form onSubmit={handleTaskFormSubmit} className="p-8 space-y-5">
-              <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Task Title</label>
-                <input
-                  type="text" value={title} onChange={(e) => setTitle(e.target.value)}
-                  className="w-full rounded-2xl border-slate-100 bg-slate-50 border p-3.5 text-slate-700 focus:ring-4 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all"
-                  placeholder="e.g. Update Documentation" required
-                />
+            <form
+              onSubmit={handleTaskFormSubmit}
+              className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain bg-gradient-to-b from-slate-50/80 to-white"
+            >
+              <div className="space-y-5 px-5 py-6 sm:px-6">
+                <div>
+                  <label
+                    htmlFor="task-title-input"
+                    className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-slate-500"
+                  >
+                    <ListTodo className="h-3.5 w-3.5 text-blue-500" aria-hidden />
+                    Task title
+                  </label>
+                  <input
+                    id="task-title-input"
+                    type="text"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/15"
+                    placeholder="e.g. Update documentation"
+                    required
+                    autoComplete="off"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="task-assignee-select"
+                    className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-slate-500"
+                  >
+                    <UserRound className="h-3.5 w-3.5 text-blue-500" aria-hidden />
+                    Assign to
+                  </label>
+                  <div className="relative">
+                    <select
+                      id="task-assignee-select"
+                      value={assignedTo}
+                      onChange={(e) => setAssignedTo(e.target.value)}
+                      className="w-full appearance-none rounded-xl border border-slate-200 bg-white py-3 pl-4 pr-10 text-sm font-medium text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-500/15"
+                      required
+                    >
+                      <option value="">Select team member</option>
+                      {assignableUsers.map((user) => {
+                        const dept = user.department ?? user.team ?? '—';
+                        return (
+                          <option key={user.id} value={user.id} title={`${user.role} · ${dept}`}>
+                            {user.name} — {user.role} · {dept}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-xs text-slate-500">
+                    Only eligible people for your role are listed (team scope for leaders).
+                  </p>
+                </div>
+
+                <div>
+                  <span className="mb-2 block text-[11px] font-bold uppercase tracking-widest text-slate-500">Priority</span>
+                  <div className="grid grid-cols-3 gap-2 rounded-xl border border-slate-200 bg-slate-100/80 p-1">
+                    {(['Low', 'Medium', 'High'] as const).map((p) => (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => setPriority(p)}
+                        className={`rounded-lg py-2.5 text-xs font-bold transition ${
+                          priority === p
+                            ? 'bg-white text-blue-700 shadow-sm ring-1 ring-slate-200/80'
+                            : 'text-slate-500 hover:text-slate-800'
+                        }`}
+                      >
+                        {p}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="task-deadline-input"
+                    className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-slate-500"
+                  >
+                    <CalendarDays className="h-3.5 w-3.5 text-blue-500" aria-hidden />
+                    Deadline
+                  </label>
+                  <div className="relative">
+                    <input
+                      id="task-deadline-input"
+                      type="date"
+                      value={deadline}
+                      onChange={(e) => setDeadline(e.target.value)}
+                      className="w-full rounded-xl border border-slate-200 bg-white py-3 pl-4 pr-4 text-sm font-medium text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-500/15 [color-scheme:light]"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="task-description-input"
+                    className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-slate-500"
+                  >
+                    <AlignLeft className="h-3.5 w-3.5 text-blue-500" aria-hidden />
+                    Description
+                  </label>
+                  <textarea
+                    id="task-description-input"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    rows={4}
+                    className="min-h-[7rem] w-full resize-y rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm leading-relaxed text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/15"
+                    placeholder="What needs to be done? Add acceptance criteria or links."
+                    required
+                  />
+                </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Assign To</label>
-                <select
-                  value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)}
-                  className="w-full rounded-2xl border-slate-100 bg-slate-50 border p-3.5 text-slate-700 focus:ring-4 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all"
-                  required
+              <div className="mt-auto border-t border-slate-100 bg-white/90 px-5 py-4 sm:px-6">
+                <button
+                  type="submit"
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 py-3.5 text-sm font-bold text-white shadow-lg shadow-blue-500/25 transition hover:from-blue-700 hover:to-indigo-700 active:scale-[0.99]"
                 >
-                  <option value="">Select Employee</option>
-                  {assignableUsers.map(user => (
-                    <option key={user.id} value={user.id}>{user.name} ({user.role}{user.team ? ` • ${user.team}` : ''})</option>
-                  ))}
-                </select>
+                  <Check className="h-5 w-5 shrink-0" strokeWidth={2.5} aria-hidden />
+                  {editTaskId ? 'Save changes' : 'Create task'}
+                </button>
               </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Priority</label>
-                  <select value={priority} onChange={(e) => setPriority(e.target.value as TaskPriority)} className="w-full rounded-2xl border-slate-100 bg-slate-50 border p-3.5 text-slate-700 focus:ring-2 focus:ring-blue-100 outline-none">
-                    <option value="Low">Low</option>
-                    <option value="Medium">Medium</option>
-                    <option value="High">High</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Deadline</label>
-                  <input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} className="w-full rounded-2xl border-slate-100 bg-slate-50 border p-3.5 text-slate-700 focus:ring-2 focus:ring-blue-100 outline-none" required />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Description</label>
-                <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} className="w-full rounded-2xl border-slate-100 bg-slate-50 border p-3.5 text-slate-700 focus:ring-4 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all" placeholder="What needs to be done?" required />
-              </div>
-
-              <button type="submit" className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold shadow-lg shadow-blue-100 transition-all active:scale-[0.98] mt-4 flex items-center justify-center gap-2">
-                <Check className="w-5 h-5" />
-                {editTaskId ? 'Save changes' : 'Create Task'}
-              </button>
             </form>
           </div>
         </div>

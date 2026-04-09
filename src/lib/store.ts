@@ -1140,7 +1140,7 @@ export const useStore = create<AppState>()(
         if (!trimmedTeam) return { ok: false, error: 'Enter a team name.' };
 
         const trimmedSite = siteName.trim();
-        if (!trimmedSite) return { ok: false, error: 'Select or enter a site.' };
+        if (!trimmedSite) return { ok: false, error: 'Select a department.' };
 
         const uniqueEmployees = [...new Set(employeeIds)];
         if (uniqueEmployees.length < 2) {

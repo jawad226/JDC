@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, Fragment, useCallback } from 'react';
+import { useMemo, useState, Fragment, useCallback, useEffect } from 'react';
 import { useStore, useShallow } from '@/lib/store';
 import type { ManualTimeRequest, User } from '@/lib/store';
 import { format, startOfWeek, endOfWeek } from 'date-fns';
@@ -19,7 +19,7 @@ import {
   siteBucketForUser,
   providerLabelForRole,
 } from '@/lib/attendanceSite';
-import { Calendar, Building2, User as UserIcon, Shield, FileSpreadsheet, FileDown } from 'lucide-react';
+import { Calendar, Building2, User as UserIcon, Shield, FileSpreadsheet, FileDown, X } from 'lucide-react';
 
 function escapeAttr(s: string) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -98,7 +98,7 @@ export function ManualTimesheetLog() {
   const [rangeEnd, setRangeEnd] = useState('');
 
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [detailModal, setDetailModal] = useState<ManualGroupRow | null>(null);
   const [page, setPage] = useState(1);
   const [rowsPerPage, setRowsPerPage] = useState(10);
 
@@ -212,9 +212,14 @@ export function ManualTimesheetLog() {
     else setSelected(new Set(paginated.map((p) => p.id)));
   };
 
-  const toggleExpand = (id: string) => {
-    setExpandedId((e) => (e === id ? null : id));
-  };
+  useEffect(() => {
+    if (!detailModal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setDetailModal(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [detailModal]);
 
   return (
     <div className="space-y-4">
@@ -260,7 +265,7 @@ export function ManualTimesheetLog() {
                   />
                 </th>
                 <th className="px-3 py-3 font-semibold">Sr#</th>
-                <th className="px-3 py-3 font-semibold">Provider</th>
+                <th className="px-3 py-3 font-semibold">Name / role</th>
                 <th className="px-3 py-3 font-semibold">Site</th>
                 <th className="px-3 py-3 font-semibold">Period</th>
                 <th className="px-3 py-3 font-semibold">Hours</th>
@@ -285,7 +290,7 @@ export function ManualTimesheetLog() {
                     <Fragment key={g.id}>
                       <tr
                         className={`${zebra} cursor-pointer border-b border-slate-100 transition-colors hover:bg-blue-50/40`}
-                        onClick={() => toggleExpand(g.id)}
+                        onClick={() => setDetailModal(g)}
                       >
                         <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
                           <input
@@ -296,7 +301,12 @@ export function ManualTimesheetLog() {
                           />
                         </td>
                         <td className="px-3 py-3 font-medium text-slate-700">{sr}</td>
-                        <td className="px-3 py-3 font-medium text-slate-900">{g.user?.name ?? 'Unknown'}</td>
+                        <td className="px-3 py-3">
+                          <div className="font-medium text-slate-900">{g.user?.name ?? 'Unknown'}</div>
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                            {g.user?.role ?? '—'}
+                          </div>
+                        </td>
                         <td className="px-3 py-3 text-slate-700">{site}</td>
                         <td className="px-3 py-3 text-slate-600">{period}</td>
                         <td className="px-3 py-3 font-semibold tabular-nums text-slate-900">
@@ -306,13 +316,6 @@ export function ManualTimesheetLog() {
                           {employeeDisplayId(g.user, g.userId)}
                         </td>
                       </tr>
-                      {expandedId === g.id && (
-                        <tr className={zebra}>
-                          <td colSpan={7} className="border-b border-slate-200 p-0">
-                            <ManualDetailPanel group={g} onClose={() => setExpandedId(null)} />
-                          </td>
-                        </tr>
-                      )}
                     </Fragment>
                   );
                 })
@@ -330,11 +333,55 @@ export function ManualTimesheetLog() {
           setPage={setPage}
         />
       </div>
+
+      {detailModal && (
+        <div
+          className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/60 p-0 backdrop-blur-[2px] sm:items-center sm:p-4"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setDetailModal(null);
+          }}
+        >
+          <div
+            className="flex max-h-[min(92dvh,720px)] w-full max-w-3xl flex-col overflow-hidden rounded-t-2xl border border-slate-200 bg-white shadow-2xl sm:rounded-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="manual-detail-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-100 bg-slate-50 px-4 py-3 sm:px-5">
+              <h3 id="manual-detail-title" className="text-base font-bold text-slate-900 sm:text-lg">
+                Manual timesheet detail
+              </h3>
+              <button
+                type="button"
+                onClick={() => setDetailModal(null)}
+                className="rounded-lg p-2 text-slate-500 transition hover:bg-slate-200/80 hover:text-slate-800"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+              <ManualDetailPanel group={detailModal} onClose={() => setDetailModal(null)} embedded />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function ManualDetailPanel({ group, onClose }: { group: ManualGroupRow; onClose: () => void }) {
+function ManualDetailPanel({
+  group,
+  onClose,
+  embedded,
+}: {
+  group: ManualGroupRow;
+  onClose: () => void;
+  /** When true, rendered inside modal (lighter chrome). */
+  embedded?: boolean;
+}) {
   const site = siteBucketForUser(group.user);
   const periodLabel = `${format(group.weekStart, 'MMM d')} - ${format(group.weekEnd, 'MMM d, yyyy')}`;
   const idLine = employeeDisplayId(group.user, group.userId);
@@ -378,19 +425,23 @@ function ManualDetailPanel({ group, onClose }: { group: ManualGroupRow; onClose:
   };
 
   return (
-    <div className="bg-slate-50/90 p-4 sm:p-6">
+    <div className={`${embedded ? 'bg-white p-4 sm:p-6' : 'bg-slate-50/90 p-4 sm:p-6'}`}>
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-lg font-bold text-slate-900">Manual timesheet (approved)</h3>
-          <p className="text-xs text-slate-500">Approved entries — click row again to collapse</p>
+          <p className="text-xs text-slate-500">
+            {embedded ? 'Approved entries for this week.' : 'Approved entries — click row again to collapse'}
+          </p>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50"
-        >
-          Close
-        </button>
+        {!embedded && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50"
+          >
+            Close
+          </button>
+        )}
       </div>
 
       <div className="mb-4 rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-100 to-slate-50 p-4 shadow-inner">
@@ -412,6 +463,9 @@ function ManualDetailPanel({ group, onClose }: { group: ManualGroupRow; onClose:
           <div className="flex items-center gap-2">
             <UserIcon className="h-4 w-4 shrink-0 text-slate-500" />
             <span>{group.user?.name ?? 'Unknown'}</span>
+            <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-600">
+              {group.user?.role ?? '—'}
+            </span>
           </div>
           <div className="flex items-center gap-2">
             <Shield className="h-4 w-4 shrink-0 text-slate-500" />
