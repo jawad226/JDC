@@ -12,7 +12,8 @@ import { commitSession } from '@/views/auth/authSession';
 
 export default function RegisterView() {
   const router = useRouter();
-  const { setCurrentUser, registerUser } = useStore();
+  const setCurrentUser = useStore((s) => s.setCurrentUser);
+  const registerUser = useStore((s) => s.registerUser);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

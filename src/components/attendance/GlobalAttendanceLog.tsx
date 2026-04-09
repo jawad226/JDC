@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState, Fragment, useCallback } from 'react';
-import { useStore } from '@/lib/store';
+import { useStore, useShallow } from '@/lib/store';
 import type { TimesheetEntry, User } from '@/lib/store';
 import { format, startOfWeek, endOfWeek } from 'date-fns';
 import {
@@ -76,7 +76,9 @@ function buildGroups(timesheets: TimesheetEntry[], users: User[]): GroupRow[] {
 }
 
 export function GlobalAttendanceLog() {
-  const { timesheets, users } = useStore();
+  const { timesheets, users } = useStore(
+    useShallow((s) => ({ timesheets: s.timesheets, users: s.users }))
+  );
 
   const allGroups = useMemo(() => buildGroups(timesheets, users), [timesheets, users]);
 

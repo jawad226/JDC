@@ -32,7 +32,7 @@ function headerPillLabel(user: User): string {
 }
 
 export function Topbar() {
-  const { currentUser } = useStore();
+  const currentUser = useStore((s) => s.currentUser);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuWrapRef = useRef<HTMLDivElement>(null);

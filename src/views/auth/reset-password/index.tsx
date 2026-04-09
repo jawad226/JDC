@@ -14,7 +14,7 @@ export default function ResetPasswordView() {
   const searchParams = useSearchParams();
   const tokenFromUrl = searchParams.get('token') || '';
 
-  const { resetPasswordWithToken } = useStore();
+  const resetPasswordWithToken = useStore((s) => s.resetPasswordWithToken);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

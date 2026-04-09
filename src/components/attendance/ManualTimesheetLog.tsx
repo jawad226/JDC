@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState, Fragment, useCallback } from 'react';
-import { useStore } from '@/lib/store';
+import { useStore, useShallow } from '@/lib/store';
 import type { ManualTimeRequest, User } from '@/lib/store';
 import { format, startOfWeek, endOfWeek } from 'date-fns';
 import {
@@ -82,7 +82,9 @@ function buildManualGroups(requests: ManualTimeRequest[], users: User[]): Manual
 }
 
 export function ManualTimesheetLog() {
-  const { manualTimeRequests, users } = useStore();
+  const { manualTimeRequests, users } = useStore(
+    useShallow((s) => ({ manualTimeRequests: s.manualTimeRequests, users: s.users }))
+  );
 
   const allGroups = useMemo(() => buildManualGroups(manualTimeRequests, users), [manualTimeRequests, users]);
 

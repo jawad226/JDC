@@ -6,7 +6,8 @@ import { useRouter } from 'next/navigation';
 import Cookies from 'js-cookie';
 
 export default function PendingPage() {
-  const { currentUser, setCurrentUser } = useStore();
+  const currentUser = useStore((s) => s.currentUser);
+  const setCurrentUser = useStore((s) => s.setCurrentUser);
   const router = useRouter();
 
   const handleLogout = () => {

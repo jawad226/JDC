@@ -1,6 +1,9 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
+/** Use with `useStore(useShallow(...))` when selecting multiple fields so unrelated store updates don’t re-render the component. */
+export { useShallow } from 'zustand/react/shallow';
+
 export type Role = 'Admin' | 'HR' | 'Team Leader' | 'Employee' | 'Pending User';
 
 /** Department options for registration (client-side demo). */
@@ -22,6 +25,8 @@ export interface User {
   address?: string;
   /** HR / employee unique code shown as “Unique ID” (falls back to `id` in UI if unset). */
   employeeCode?: string;
+  /** Office / site label (set when HR/Admin assigns a team). */
+  workSite?: string;
   /** Demo-only stored credential; do not render in admin lists. */
   password?: string;
 }
@@ -213,6 +218,27 @@ interface AppState {
   teams: string[];
   addTeam: (name: string) => void;
   removeTeam: (name: string) => void;
+  /** Known site / office names for assignments. */
+  sites: string[];
+  addSite: (name: string) => void;
+  /**
+   * Admin / HR: assign one TL + 2+ employees to a team name and site.
+   * Creates the team name in the list if new. Clears previous TL for that team name.
+   */
+  configureTeamAssignment: (input: {
+    teamName: string;
+    leaderUserId: string;
+    employeeIds: string[];
+    siteName: string;
+  }) => { ok: true } | { ok: false; error: string };
+  /** Admin/HR: set or clear who leads a team (site kept from current team if any). */
+  setTeamLeaderForTeam: (teamName: string, leaderUserId: string | null) => { ok: true } | { ok: false; error: string };
+  /** Admin/HR: remove user from their current team (clears team + site). */
+  removeUserFromTeamRoster: (userId: string) => { ok: true } | { ok: false; error: string };
+  /** Admin/HR: move user to another team (site follows target team). */
+  shiftUserToTeam: (userId: string, targetTeamName: string) => { ok: true } | { ok: false; error: string };
+  /** Admin/HR: add employees to an existing team (inherits site from current TL). */
+  addEmployeesToTeam: (teamName: string, employeeIds: string[]) => { ok: true } | { ok: false; error: string };
   // Approval
   approveUser: (userId: string, role: Role, team: string) => void;
   // Registration & auth (demo: passwords stored in persisted state)
@@ -325,6 +351,7 @@ export const useStore = create<AppState>()(
       users: mockUsers,
       timesheets: [],
       teams: ['Development', 'Design', 'HR', 'Support', 'Management'],
+      sites: ['Karachi HQ', 'Lahore Office', 'Islamabad', 'Remote'],
       tasks: [
         {
           id: 't1',
@@ -1096,6 +1123,251 @@ export const useStore = create<AppState>()(
         teams: state.teams.filter(t => t !== name)
       })),
 
+      addSite: (name) =>
+        set((state) => {
+          const trimmed = name.trim();
+          if (!trimmed || state.sites.includes(trimmed)) return state;
+          return { sites: [...state.sites, trimmed] };
+        }),
+
+      configureTeamAssignment: ({ teamName, leaderUserId, employeeIds, siteName }) => {
+        const actor = get().currentUser;
+        if (!actor || (actor.role !== 'Admin' && actor.role !== 'HR')) {
+          return { ok: false, error: 'Only Admin or HR can assign teams.' };
+        }
+
+        const trimmedTeam = teamName.trim();
+        if (!trimmedTeam) return { ok: false, error: 'Enter a team name.' };
+
+        const trimmedSite = siteName.trim();
+        if (!trimmedSite) return { ok: false, error: 'Select or enter a site.' };
+
+        const uniqueEmployees = [...new Set(employeeIds)];
+        if (uniqueEmployees.length < 2) {
+          return { ok: false, error: 'Select at least two different employees.' };
+        }
+        if (uniqueEmployees.includes(leaderUserId)) {
+          return { ok: false, error: 'Team leader cannot be selected as an employee.' };
+        }
+
+        const { users } = get();
+        const leader = users.find((u) => u.id === leaderUserId);
+        if (!leader || leader.role !== 'Team Leader') {
+          return { ok: false, error: 'Choose a user with the Team Leader role.' };
+        }
+        if (leader.team && leader.team !== trimmedTeam) {
+          return {
+            ok: false,
+            error: `${leader.name} is already a leader on another team. Remove them from that team first, or pick a leader without a team.`,
+          };
+        }
+
+        for (const id of uniqueEmployees) {
+          const u = users.find((x) => x.id === id);
+          if (!u || u.role !== 'Employee') {
+            return { ok: false, error: 'Employees only: pick users with the Employee role.' };
+          }
+          if (u.team) {
+            return { ok: false, error: `${u.name} is already assigned to a team. Remove them from that team first.` };
+          }
+        }
+
+        set((state) => {
+          let next = state.users.map((u) => {
+            if (u.role === 'Team Leader' && u.team === trimmedTeam) {
+              return { ...u, team: undefined, workSite: undefined };
+            }
+            return u;
+          });
+
+          next = next.map((u) => {
+            if (u.id === leaderUserId) {
+              return { ...u, team: trimmedTeam, role: 'Team Leader' as Role, workSite: trimmedSite };
+            }
+            if (uniqueEmployees.includes(u.id)) {
+              return { ...u, team: trimmedTeam, role: 'Employee' as Role, workSite: trimmedSite };
+            }
+            return u;
+          });
+
+          const teams = state.teams.includes(trimmedTeam)
+            ? state.teams
+            : [...state.teams, trimmedTeam];
+
+          let currentUser = state.currentUser;
+          if (currentUser) {
+            const refreshed = next.find((x) => x.id === currentUser!.id);
+            if (refreshed) currentUser = refreshed;
+          }
+
+          return { users: next, teams, currentUser };
+        });
+
+        return { ok: true };
+      },
+
+      setTeamLeaderForTeam: (teamName, leaderUserId) => {
+        const actor = get().currentUser;
+        if (!actor || (actor.role !== 'Admin' && actor.role !== 'HR')) {
+          return { ok: false, error: 'Only Admin or HR can change team leads.' };
+        }
+        const trimmed = teamName.trim();
+        if (!trimmed) return { ok: false, error: 'Team name required.' };
+
+        const { users } = get();
+        const siteForTeam = (list: User[]) => {
+          const onTeam = list.filter((u) => u.team === trimmed);
+          const tl = onTeam.find((u) => u.role === 'Team Leader');
+          if (tl?.workSite) return tl.workSite;
+          return onTeam.find((u) => u.workSite)?.workSite;
+        };
+
+        if (leaderUserId) {
+          const leader = users.find((u) => u.id === leaderUserId);
+          if (!leader || leader.role !== 'Team Leader') {
+            return { ok: false, error: 'Pick a user with the Team Leader role.' };
+          }
+        }
+
+        set((state) => {
+          let next = state.users.map((u) => {
+            if (u.role === 'Team Leader' && u.team === trimmed) {
+              return { ...u, team: undefined, workSite: undefined };
+            }
+            return u;
+          });
+
+          const site = siteForTeam(next) ?? '';
+
+          if (leaderUserId) {
+            next = next.map((u) =>
+              u.id === leaderUserId
+                ? { ...u, team: trimmed, role: 'Team Leader' as Role, workSite: site || u.workSite }
+                : u
+            );
+          }
+
+          const teams = state.teams.includes(trimmed) ? state.teams : [...state.teams, trimmed];
+
+          let currentUser = state.currentUser;
+          if (currentUser) {
+            const refreshed = next.find((x) => x.id === currentUser!.id);
+            if (refreshed) currentUser = refreshed;
+          }
+
+          return { users: next, teams, currentUser };
+        });
+
+        return { ok: true };
+      },
+
+      removeUserFromTeamRoster: (userId) => {
+        const actor = get().currentUser;
+        if (!actor || (actor.role !== 'Admin' && actor.role !== 'HR')) {
+          return { ok: false, error: 'Not allowed.' };
+        }
+        const u = get().users.find((x) => x.id === userId);
+        if (!u) return { ok: false, error: 'User not found.' };
+        if (!u.team) return { ok: false, error: 'User is not on a team.' };
+
+        set((state) => {
+          const users = state.users.map((x) =>
+            x.id === userId ? { ...x, team: undefined, workSite: undefined } : x
+          );
+          let currentUser = state.currentUser;
+          if (currentUser?.id === userId) {
+            currentUser = users.find((x) => x.id === userId) ?? null;
+          } else if (currentUser) {
+            const refreshed = users.find((x) => x.id === currentUser!.id);
+            if (refreshed) currentUser = refreshed;
+          }
+          return { users, currentUser };
+        });
+        return { ok: true };
+      },
+
+      shiftUserToTeam: (userId, targetTeamName) => {
+        const actor = get().currentUser;
+        if (!actor || (actor.role !== 'Admin' && actor.role !== 'HR')) {
+          return { ok: false, error: 'Not allowed.' };
+        }
+        const trimmed = targetTeamName.trim();
+        if (!trimmed) return { ok: false, error: 'Pick a target team.' };
+
+        const { users } = get();
+        const user = users.find((u) => u.id === userId);
+        if (!user?.team) return { ok: false, error: 'User has no team to move from.' };
+        if (user.role === 'Team Leader') {
+          return { ok: false, error: 'Change or remove the team leader from the team panel instead of shifting.' };
+        }
+        if (user.team === trimmed) return { ok: false, error: 'Already on that team.' };
+
+        const onTarget = users.filter((u) => u.team === trimmed);
+        const site =
+          onTarget.find((u) => u.role === 'Team Leader' && u.workSite)?.workSite ||
+          onTarget.find((u) => u.workSite)?.workSite;
+        if (!site) {
+          return { ok: false, error: 'Target team has no site yet. Assign a team leader there first.' };
+        }
+
+        set((state) => {
+          const next = state.users.map((u) =>
+            u.id === userId ? { ...u, team: trimmed, workSite: site } : u
+          );
+          let currentUser = state.currentUser;
+          if (currentUser) {
+            const refreshed = next.find((x) => x.id === currentUser!.id);
+            if (refreshed) currentUser = refreshed;
+          }
+          return { users: next, currentUser };
+        });
+        return { ok: true };
+      },
+
+      addEmployeesToTeam: (teamName, employeeIds) => {
+        const actor = get().currentUser;
+        if (!actor || (actor.role !== 'Admin' && actor.role !== 'HR')) {
+          return { ok: false, error: 'Not allowed.' };
+        }
+        const trimmed = teamName.trim();
+        if (!trimmed) return { ok: false, error: 'Team name required.' };
+
+        const unique = [...new Set(employeeIds)];
+        if (unique.length < 1) return { ok: false, error: 'Select at least one employee.' };
+
+        const { users } = get();
+        const onTeam = users.filter((u) => u.team === trimmed);
+        const site =
+          onTeam.find((u) => u.role === 'Team Leader' && u.workSite)?.workSite ||
+          onTeam.find((u) => u.workSite)?.workSite;
+        if (!site) {
+          return { ok: false, error: 'Assign a team leader (with site) to this team first.' };
+        }
+
+        for (const id of unique) {
+          const u = users.find((x) => x.id === id);
+          if (!u || u.role !== 'Employee') {
+            return { ok: false, error: 'Only employees can be added with this action.' };
+          }
+          if (u.team) {
+            return { ok: false, error: `${u.name} is already on a team. Remove them from that team first.` };
+          }
+        }
+
+        set((state) => {
+          const next = state.users.map((u) =>
+            unique.includes(u.id) ? { ...u, team: trimmed, role: 'Employee' as Role, workSite: site } : u
+          );
+          let currentUser = state.currentUser;
+          if (currentUser) {
+            const refreshed = next.find((x) => x.id === currentUser!.id);
+            if (refreshed) currentUser = refreshed;
+          }
+          return { users: next, currentUser };
+        });
+        return { ok: true };
+      },
+
       approveUser: (userId, role, team) => set((state) => ({
         users: state.users.map(u =>
           u.id === userId ? { ...u, role, team, status: 'Available' as const } : u
@@ -1188,7 +1460,7 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'gdc-storage',
-      version: 6,
+      version: 7,
       migrate: (persistedState: any) => {
         if (!persistedState) return persistedState;
 
@@ -1202,8 +1474,13 @@ export const useStore = create<AppState>()(
         };
 
         // Ensure new slices exist.
+        const defaultSites = ['Karachi HQ', 'Lahore Office', 'Islamabad', 'Remote'];
         const nextState = {
           ...persistedState,
+          sites:
+            Array.isArray(persistedState.sites) && persistedState.sites.length > 0
+              ? persistedState.sites
+              : defaultSites,
           manualTimeRequests: Array.isArray(persistedState.manualTimeRequests) ? persistedState.manualTimeRequests : [],
           passwordResetTokens: Array.isArray(persistedState.passwordResetTokens) ? persistedState.passwordResetTokens : [],
           users: Array.isArray(persistedState.users)

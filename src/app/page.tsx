@@ -1,13 +1,13 @@
 'use client';
 
-import { useStore, User } from '@/lib/store';
+import { useStore, useShallow, User } from '@/lib/store';
 import { Play, Square, AlertCircle, Clock, CheckCircle2, Calendar, TrendingUp, ArrowRight, UserCheck, Timer, Users, Activity, Target, BarChart3, Shield, Coffee } from 'lucide-react';
 import { format, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay } from 'date-fns';
 import { useEffect, useState, useMemo } from 'react';
 
 // ─── ROUTER ────────────────────────────────────────────────────────
 export default function Dashboard() {
-  const { currentUser } = useStore();
+  const currentUser = useStore((s) => s.currentUser);
 
   if (currentUser?.role === 'Admin') return <AdminDashboard />;
   if (currentUser?.role === 'HR') return <HRDashboard />;
@@ -29,7 +29,16 @@ function StatCard({ icon: Icon, label, value, color, bg }: { icon: any; label: s
 }
 
 function TimerWidget() {
-  const { currentUser, timesheets, clockIn, clockOut, startBreak, endBreak } = useStore();
+  const { currentUser, timesheets, clockIn, clockOut, startBreak, endBreak } = useStore(
+    useShallow((s) => ({
+      currentUser: s.currentUser,
+      timesheets: s.timesheets,
+      clockIn: s.clockIn,
+      clockOut: s.clockOut,
+      startBreak: s.startBreak,
+      endBreak: s.endBreak,
+    }))
+  );
   const activeTimesheet = timesheets.find(t => t.userId === currentUser?.id && !t.clockOut);
   const isClockedIn = !!activeTimesheet;
   const [now, setNow] = useState(new Date());
@@ -164,7 +173,9 @@ function TimerWidget() {
 }
 
 function WeeklyChart() {
-  const { currentUser, timesheets } = useStore();
+  const { currentUser, timesheets } = useStore(
+    useShallow((s) => ({ currentUser: s.currentUser, timesheets: s.timesheets }))
+  );
   const now = new Date();
   const weekStart = startOfWeek(now, { weekStartsOn: 1 });
   const weekEnd = endOfWeek(now, { weekStartsOn: 1 });
@@ -263,7 +274,14 @@ function TaskList({ tasks }: { tasks: any[] }) {
 
 // ─── 1. ADMIN DASHBOARD ────────────────────────────────────────────
 function AdminDashboard() {
-  const { users, timesheets, tasks, leaves } = useStore();
+  const { users, timesheets, tasks, leaves } = useStore(
+    useShallow((s) => ({
+      users: s.users,
+      timesheets: s.timesheets,
+      tasks: s.tasks,
+      leaves: s.leaves,
+    }))
+  );
   const now = new Date();
 
   const activeEmployees = timesheets.filter(t => !t.clockOut).length;
@@ -324,7 +342,15 @@ function AdminDashboard() {
 
 // ─── 2. HR DASHBOARD ───────────────────────────────────────────────
 function HRDashboard() {
-  const { currentUser, users, timesheets, tasks, leaves } = useStore();
+  const { currentUser, users, timesheets, tasks, leaves } = useStore(
+    useShallow((s) => ({
+      currentUser: s.currentUser,
+      users: s.users,
+      timesheets: s.timesheets,
+      tasks: s.tasks,
+      leaves: s.leaves,
+    }))
+  );
   const now = new Date();
 
   const myTeam = currentUser?.team;
@@ -395,7 +421,14 @@ function HRDashboard() {
 
 // ─── 3. TEAM LEADER DASHBOARD ──────────────────────────────────────
 function TeamLeaderDashboard() {
-  const { currentUser, users, timesheets, tasks } = useStore();
+  const { currentUser, users, timesheets, tasks } = useStore(
+    useShallow((s) => ({
+      currentUser: s.currentUser,
+      users: s.users,
+      timesheets: s.timesheets,
+      tasks: s.tasks,
+    }))
+  );
   const now = new Date();
 
   const myTeam = currentUser?.team;
@@ -497,7 +530,14 @@ function TeamLeaderDashboard() {
 
 // ─── 4. USER (EMPLOYEE) DASHBOARD ──────────────────────────────────
 function UserDashboard() {
-  const { currentUser, timesheets, tasks, leaves } = useStore();
+  const { currentUser, timesheets, tasks, leaves } = useStore(
+    useShallow((s) => ({
+      currentUser: s.currentUser,
+      timesheets: s.timesheets,
+      tasks: s.tasks,
+      leaves: s.leaves,
+    }))
+  );
   const [now, setNow] = useState(new Date());
 
   const userTasks = tasks.filter(t => t.assignedTo === currentUser?.id && t.status !== 'Approved');

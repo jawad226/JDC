@@ -16,7 +16,7 @@ import {
   Pencil,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { useStore } from '@/lib/store';
+import { useStore, useShallow } from '@/lib/store';
 import type { Task, TaskHistoryEntry, TaskPriority, TaskWorkflowStatus } from '@/lib/store';
 import { format } from 'date-fns';
 
@@ -35,7 +35,21 @@ export default function TasksPage() {
     approveTask,
     deletePendingTask,
     updatePendingTask,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      tasks: s.tasks,
+      currentUser: s.currentUser,
+      users: s.users,
+      availability: s.availability,
+      createTask: s.createTask,
+      startTaskWork: s.startTaskWork,
+      submitTask: s.submitTask,
+      moveTaskToReview: s.moveTaskToReview,
+      approveTask: s.approveTask,
+      deletePendingTask: s.deletePendingTask,
+      updatePendingTask: s.updatePendingTask,
+    }))
+  );
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [editTaskId, setEditTaskId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);

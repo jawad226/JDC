@@ -12,7 +12,8 @@ import { commitSession } from '@/views/auth/authSession';
 
 export default function SignInView() {
   const router = useRouter();
-  const { setCurrentUser, loginWithCredentials } = useStore();
+  const setCurrentUser = useStore((s) => s.setCurrentUser);
+  const loginWithCredentials = useStore((s) => s.loginWithCredentials);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

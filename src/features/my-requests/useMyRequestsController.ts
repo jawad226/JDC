@@ -2,13 +2,21 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useStore, type LeaveType } from '@/lib/store';
+import { useStore, useShallow, type LeaveType } from '@/lib/store';
 import type { RequestsHubTab } from '@/components/requests/RequestsHubShell';
 import type { RequestStatusFilter } from './types';
 
 export function useMyRequestsController() {
   const searchParams = useSearchParams();
-  const { currentUser, leaves, applyLeave, manualTimeRequests, applyManualTimeRequest } = useStore();
+  const { currentUser, leaves, applyLeave, manualTimeRequests, applyManualTimeRequest } = useStore(
+    useShallow((s) => ({
+      currentUser: s.currentUser,
+      leaves: s.leaves,
+      applyLeave: s.applyLeave,
+      manualTimeRequests: s.manualTimeRequests,
+      applyManualTimeRequest: s.applyManualTimeRequest,
+    }))
+  );
 
   const [activeTab, setActiveTab] = useState<RequestsHubTab>('leave');
   const [leaveStatusFilter, setLeaveStatusFilter] = useState<RequestStatusFilter>('Pending');

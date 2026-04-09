@@ -6,7 +6,8 @@ import { useEffect, useState } from 'react';
 import Cookies from 'js-cookie';
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const { currentUser, setCurrentUser } = useStore();
+  const currentUser = useStore((s) => s.currentUser);
+  const setCurrentUser = useStore((s) => s.setCurrentUser);
   const router = useRouter();
   const pathname = usePathname();
   const [mounted, setMounted] = useState(false);

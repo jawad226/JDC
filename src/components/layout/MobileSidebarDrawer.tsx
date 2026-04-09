@@ -16,16 +16,20 @@ import {
   HelpCircle,
   LogOut,
   ShieldCheck,
+  UserCog,
+  BarChart3,
   X,
 } from 'lucide-react';
 
 const navItems = [
    { name: 'Dashboard', href: '/', icon: LayoutDashboard },
+   { name: 'Team Data', href: '/team-data', icon: BarChart3 },
    { name: 'Schedule', href: '/schedule', icon: Calendar },
    { name: 'Timesheet', href: '/timesheet', icon: Clock },
    { name: 'Availability', href: '/availability', icon: CalendarClock },
    { name: 'My Requests', href: '/my-requests', icon: ClipboardList },
    { name: 'Request Management', href: '/request-management', icon: UsersRound },
+   { name: 'Team assign to TL', href: '/team-tl', icon: UserCog },
    { name: 'Admin Control', href: '/admin', icon: ShieldCheck },
  ];
  
@@ -43,12 +47,15 @@ const navItems = [
  }) {
    const pathname = usePathname();
    const router = useRouter();
-   const { currentUser, setCurrentUser } = useStore();
+   const currentUser = useStore((s) => s.currentUser);
+   const setCurrentUser = useStore((s) => s.setCurrentUser);
  
    const filtered = navItems.filter((item) => {
      if (item.name === 'Admin Control' && currentUser?.role !== 'Admin') return false;
      if (item.name === 'My Requests' && currentUser?.role === 'Admin') return false;
      if (item.name === 'Request Management' && currentUser?.role === 'Employee') return false;
+     if (item.name === 'Team assign to TL' && currentUser?.role !== 'Admin' && currentUser?.role !== 'HR') return false;
+     if (item.name === 'Team Data' && currentUser?.role !== 'Team Leader') return false;
      return true;
    });
  

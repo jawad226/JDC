@@ -3,19 +3,19 @@
 import Link from 'next/link';
 import { GlobalAttendanceLog } from '@/components/attendance/GlobalAttendanceLog';
 import { ManualTimesheetLog } from '@/components/attendance/ManualTimesheetLog';
-import { useStore } from '@/lib/store';
+import { useStore, useShallow } from '@/lib/store';
 import { employeeDisplayId } from '@/lib/attendanceSite';
 import { format, startOfWeek, endOfWeek, isWithinInterval } from 'date-fns';
 import { Clock, TrendingUp, AlertCircle, Calendar, ArrowRight, UserCheck, Users, Check, Plus } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 export default function TimesheetPage() {
-  const { currentUser } = useStore();
+  const currentUser = useStore((s) => s.currentUser);
 
   // Admin: Company-wide attendance report (no timer)
   if (currentUser?.role === 'Admin') return <AdminTimesheetView />;
-  // Team Leader: Team attendance report + personal history
-  if (currentUser?.role === 'Team Leader') return <TeamLeaderTimesheetView />;
+  // Team Leader: personal attendance only (team log is on /team-data)
+  if (currentUser?.role === 'Team Leader') return <EmployeeTimesheetView />;
   // HR: use Request Management to approve/reject manual time requests
   if (currentUser?.role === 'HR') return <HRTimesheetView />;
   // Employee: personal attendance history
@@ -75,39 +75,11 @@ function AdminTimesheetView() {
   );
 }
 
-// ─── TEAM LEADER: TEAM-SCOPED ATTENDANCE + PERSONAL ────────────
-function TeamLeaderTimesheetView() {
-  const { timesheets, currentUser, users } = useStore();
-
-  const teamMembers = users.filter(u => u.team === currentUser?.team && u.role !== 'Pending User');
-  const teamTimesheets = timesheets
-    .filter(t => teamMembers.some(m => m.id === t.userId))
-    .sort((a, b) => new Date(b.clockIn).getTime() - new Date(a.clockIn).getTime());
-
-  return (
-    <div className="max-w-6xl mx-auto space-y-8 pb-12">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-        <div>
-          <h1 className="text-3xl font-light text-slate-800 tracking-tight flex items-center gap-3">
-            <Users className="w-8 h-8 text-blue-500" />
-            Team Attendance
-          </h1>
-          <p className="text-slate-500 mt-2 font-medium">Monitor the team&apos;s working hours and attendance records.</p>
-        </div>
-      </div>
-
-      {/* Personal stats */}
-      <PersonalStats userId={currentUser?.id} timesheets={timesheets} />
-
-      {/* Team Attendance */}
-      <TimesheetTable timesheets={teamTimesheets} users={teamMembers} title={`${currentUser?.team} Team Log`} />
-    </div>
-  );
-}
-
-// ─── HR / EMPLOYEE: PERSONAL ATTENDANCE ────────────────────────
+// ─── HR / EMPLOYEE / TEAM LEADER: PERSONAL ATTENDANCE ────────────
 function EmployeeTimesheetView() {
-  const { timesheets, currentUser } = useStore();
+  const { timesheets, currentUser } = useStore(
+    useShallow((s) => ({ timesheets: s.timesheets, currentUser: s.currentUser }))
+  );
 
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -323,7 +295,14 @@ function EmployeeTimesheetView() {
 }
 
 function HRManualTimesheetView() {
-  const { users, currentUser, timesheets, addManualTimesheetEntry } = useStore();
+  const { users, currentUser, timesheets, addManualTimesheetEntry } = useStore(
+    useShallow((s) => ({
+      users: s.users,
+      currentUser: s.currentUser,
+      timesheets: s.timesheets,
+      addManualTimesheetEntry: s.addManualTimesheetEntry,
+    }))
+  );
 
   const today = useMemo(() => {
     const d = new Date();
@@ -494,7 +473,7 @@ function HRManualTimesheetView() {
 }
 
 // ─── SHARED: PERSONAL STATS WIDGET ─────────────────────────────
-function PersonalStats({ userId, timesheets }: { userId?: string; timesheets: any[] }) {
+export function PersonalStats({ userId, timesheets }: { userId?: string; timesheets: any[] }) {
   const now = new Date();
   const weekStart = startOfWeek(now);
   const weekEnd = endOfWeek(now);
@@ -521,7 +500,7 @@ function PersonalStats({ userId, timesheets }: { userId?: string; timesheets: an
 }
 
 // ─── SHARED: TIMESHEET TABLE ───────────────────────────────────
-function TimesheetTable({ timesheets, users, title }: { timesheets: any[]; users: any[]; title: string }) {
+export function TimesheetTable({ timesheets, users, title }: { timesheets: any[]; users: any[]; title: string }) {
   return (
     <div className="bg-white rounded-[2.5rem] shadow-sm border border-slate-100 overflow-hidden">
       <div className="px-8 py-6 border-b border-slate-50 flex items-center justify-between">

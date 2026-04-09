@@ -56,6 +56,16 @@ export function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL('/', request.url));
   }
 
+  // Team → TL: Only Admin and HR
+  if (pathname.startsWith('/team-tl') && role !== 'HR' && role !== 'Admin') {
+    return NextResponse.redirect(new URL('/', request.url));
+  }
+
+  // Team Data: Team Leader only
+  if (pathname.startsWith('/team-data') && role !== 'Team Leader') {
+    return NextResponse.redirect(new URL('/', request.url));
+  }
+
   return NextResponse.next();
 }
 

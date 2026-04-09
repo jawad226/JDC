@@ -9,7 +9,7 @@ import { AuthAlerts } from '@/views/auth/AuthAlerts';
 import { AUTH_INPUT_CLASS } from '@/views/auth/authConstants';
 
 export default function ForgotPasswordView() {
-  const { requestPasswordReset } = useStore();
+  const requestPasswordReset = useStore((s) => s.requestPasswordReset);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

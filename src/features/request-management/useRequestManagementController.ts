@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { useStore } from '@/lib/store';
+import { useStore, useShallow } from '@/lib/store';
 import type { RequestsHubTab } from '@/components/requests/RequestsHubShell';
 import type { ReviewStatusFilter } from './constants';
 
@@ -14,7 +14,17 @@ export function useRequestManagementController() {
     manualTimeRequests,
     approveManualTimeRequest,
     rejectManualTimeRequest,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      currentUser: s.currentUser,
+      leaves: s.leaves,
+      users: s.users,
+      updateLeaveStatus: s.updateLeaveStatus,
+      manualTimeRequests: s.manualTimeRequests,
+      approveManualTimeRequest: s.approveManualTimeRequest,
+      rejectManualTimeRequest: s.rejectManualTimeRequest,
+    }))
+  );
 
   const [activeTab, setActiveTab] = useState<RequestsHubTab>('leave');
   const [searchTerm, setSearchTerm] = useState('');

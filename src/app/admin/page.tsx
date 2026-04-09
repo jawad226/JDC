@@ -1,11 +1,21 @@
 'use client';
 
-import { useStore, Role, User } from '@/lib/store';
+import { useStore, useShallow, Role, User } from '@/lib/store';
 import { ShieldCheck, Users, Mail, UserPlus, Trash2, Edit3, X, Check, Shield } from 'lucide-react';
 import { useState } from 'react';
 
 export default function AdminDashboardPage() {
-  const { users, addUser, removeUser, updateUser, teams, addTeam, removeTeam } = useStore();
+  const { users, addUser, removeUser, updateUser, teams, addTeam, removeTeam } = useStore(
+    useShallow((s) => ({
+      users: s.users,
+      addUser: s.addUser,
+      removeUser: s.removeUser,
+      updateUser: s.updateUser,
+      teams: s.teams,
+      addTeam: s.addTeam,
+      removeTeam: s.removeTeam,
+    }))
+  );
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   
