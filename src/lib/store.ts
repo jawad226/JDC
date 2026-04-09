@@ -60,6 +60,7 @@ export type TaskWorkflowStatus =
   | 'Approved';
 export type TaskHistoryAction =
   | 'Created'
+  | 'Updated'
   | 'Start Work'
   | 'Submit'
   | 'Send to Review'
@@ -177,6 +178,19 @@ interface AppState {
   /** HR/TL: move a submitted task into the Review step before final approval. */
   moveTaskToReview: (taskId: string) => void;
   approveTask: (taskId: string) => void;
+  /** Admin / HR / Team Leader: remove a task only while it is still Pending. */
+  deletePendingTask: (taskId: string) => void;
+  /** Admin / HR / Team Leader: edit fields only while task is still Pending. */
+  updatePendingTask: (
+    taskId: string,
+    input: {
+      title: string;
+      description: string;
+      assignedTo: string;
+      priority: TaskPriority;
+      deadline: string;
+    }
+  ) => void;
   addTaskComment: (taskId: string, comment: string) => void;
   // Leaves
   applyLeave: (leave: Omit<LeaveRequest, 'id' | 'status' | 'createdAt'>) => void;
@@ -802,6 +816,80 @@ export const useStore = create<AppState>()(
         };
 
         set((state) => ({ tasks: [...state.tasks, newTask] }));
+      },
+
+      deletePendingTask: (taskId) => {
+        const { currentUser, tasks, users } = get();
+        if (!currentUser) return;
+        const allowed =
+          currentUser.role === 'Admin' ||
+          currentUser.role === 'HR' ||
+          currentUser.role === 'Team Leader';
+        if (!allowed) return;
+
+        const task = tasks.find(t => t.id === taskId);
+        if (!task || task.status !== 'Pending') return;
+
+        if (currentUser.role === 'Team Leader') {
+          const assignedUser = users.find(u => u.id === task.assignedTo);
+          if (!assignedUser || assignedUser.team !== currentUser.team) return;
+        }
+
+        set((state) => ({ tasks: state.tasks.filter(t => t.id !== taskId) }));
+      },
+
+      updatePendingTask: (taskId, input) => {
+        const { currentUser, tasks, users } = get();
+        if (!currentUser) return;
+        const allowed =
+          currentUser.role === 'Admin' ||
+          currentUser.role === 'HR' ||
+          currentUser.role === 'Team Leader';
+        if (!allowed) return;
+
+        const task = tasks.find(t => t.id === taskId);
+        if (!task || task.status !== 'Pending') return;
+
+        if (currentUser.role === 'Team Leader') {
+          const currentAssignee = users.find(u => u.id === task.assignedTo);
+          if (!currentAssignee || currentAssignee.team !== currentUser.team) return;
+        }
+
+        const { title, description, assignedTo, priority, deadline } = input;
+        const assignedUser = users.find(u => u.id === assignedTo);
+        if (!assignedUser || assignedUser.role === 'Pending User') return;
+        if (currentUser.role === 'Team Leader' && assignedUser.team !== currentUser.team) return;
+
+        const titleTrim = title.trim();
+        const descriptionTrim = description.trim();
+        if (!titleTrim || !descriptionTrim || !deadline) return;
+
+        const nowIso = new Date().toISOString();
+        const entry: TaskHistoryEntry = {
+          id: Math.random().toString(36).substring(7),
+          at: nowIso,
+          actorId: currentUser.id,
+          actorRole: currentUser.role,
+          fromStatus: 'Pending',
+          toStatus: 'Pending',
+          action: 'Updated',
+        };
+
+        set((state) => ({
+          tasks: state.tasks.map(t =>
+            t.id === taskId
+              ? {
+                  ...t,
+                  title: titleTrim,
+                  description: descriptionTrim,
+                  assignedTo,
+                  priority,
+                  deadline,
+                  history: [...(t.history || []), entry],
+                }
+              : t
+          ),
+        }));
       },
 
       startTaskWork: (taskId) => {

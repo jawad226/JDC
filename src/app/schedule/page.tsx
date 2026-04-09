@@ -12,6 +12,8 @@ import {
   Send,
   Play,
   Eye,
+  Trash2,
+  Pencil,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useStore } from '@/lib/store';
@@ -31,8 +33,11 @@ export default function TasksPage() {
     submitTask,
     moveTaskToReview,
     approveTask,
+    deletePendingTask,
+    updatePendingTask,
   } = useStore();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [editTaskId, setEditTaskId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('Pending');
 
@@ -76,22 +81,66 @@ export default function TasksPage() {
   const [priority, setPriority] = useState<TaskPriority>('Medium');
   const [deadline, setDeadline] = useState('');
 
-  const handleCreateTask = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!currentUser) return;
-    createTask({
-      title,
-      description,
-      assignedTo,
-      priority,
-      deadline,
-    });
-    setIsCreateModalOpen(false);
+  const canManagePendingTask = (task: Task) => {
+    if (!currentUser || task.status !== 'Pending') return false;
+    if (currentUser.role !== 'Admin' && currentUser.role !== 'HR' && currentUser.role !== 'Team Leader') {
+      return false;
+    }
+    if (currentUser.role === 'Team Leader') {
+      const assignee = users.find(u => u.id === task.assignedTo);
+      if (!assignee || assignee.team !== currentUser.team) return false;
+    }
+    return true;
+  };
+
+  const resetTaskForm = () => {
     setTitle('');
     setDescription('');
     setAssignedTo('');
     setPriority('Medium');
     setDeadline('');
+  };
+
+  const closeTaskFormModal = () => {
+    setIsCreateModalOpen(false);
+    setEditTaskId(null);
+    resetTaskForm();
+  };
+
+  const openEditTask = (task: Task) => {
+    if (!canManagePendingTask(task)) return;
+    setIsCreateModalOpen(false);
+    setEditTaskId(task.id);
+    setTitle(task.title);
+    setDescription(task.description);
+    setAssignedTo(task.assignedTo);
+    setPriority(task.priority);
+    setDeadline(format(new Date(task.deadline), 'yyyy-MM-dd'));
+  };
+
+  const handleTaskFormSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser) return;
+    if (editTaskId) {
+      updatePendingTask(editTaskId, {
+        title,
+        description,
+        assignedTo,
+        priority,
+        deadline,
+      });
+      setEditTaskId(null);
+    } else {
+      createTask({
+        title,
+        description,
+        assignedTo,
+        priority,
+        deadline,
+      });
+      setIsCreateModalOpen(false);
+    }
+    resetTaskForm();
   };
 
   const filterOptions: { value: StatusFilter; label: string }[] = [
@@ -191,16 +240,15 @@ export default function TasksPage() {
       </div>
 
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <h2 className="text-2xl font-bold tracking-tight text-sky-600">Upcoming</h2>
         <div className="flex flex-wrap items-center gap-3">
-          <label className="sr-only" htmlFor="task-status-filter">
-            Filter by status
+          <label htmlFor="task-status-filter" className="text-sm font-semibold text-slate-600">
+            Status
           </label>
           <select
             id="task-status-filter"
             value={statusFilter}
             onChange={e => setStatusFilter(e.target.value as StatusFilter)}
-            className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
+            className="min-w-[11rem] rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
           >
             {filterOptions.map(o => (
               <option key={o.value} value={o.value}>
@@ -208,17 +256,21 @@ export default function TasksPage() {
               </option>
             ))}
           </select>
-          {canCreateTask && (
-            <button
-              type="button"
-              onClick={() => setIsCreateModalOpen(true)}
-              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-blue-700 active:scale-[0.98]"
-            >
-              <Plus className="h-4 w-4" />
-              Add
-            </button>
-          )}
         </div>
+        {canCreateTask && (
+          <button
+            type="button"
+            onClick={() => {
+              setEditTaskId(null);
+              resetTaskForm();
+              setIsCreateModalOpen(true);
+            }}
+            className="inline-flex w-fit items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-blue-700 active:scale-[0.98]"
+          >
+            <Plus className="h-4 w-4" />
+            Add
+          </button>
+        )}
       </div>
 
       {filteredTasks.length === 0 ? (
@@ -232,8 +284,8 @@ export default function TasksPage() {
             const dl = new Date(task.deadline);
             const deptOrTeam = assignee?.department ?? assignee?.team ?? '—';
             return (
+              <div key={task.id} className="relative">
               <button
-                key={task.id}
                 type="button"
                 onClick={() => setSelectedTaskId(task.id)}
                 className="group w-full text-left"
@@ -274,26 +326,65 @@ export default function TasksPage() {
                   </div>
                 </div>
               </button>
+              {canManagePendingTask(task) && (
+                <div className="absolute right-3 top-3 z-10 flex gap-1">
+                  <button
+                    type="button"
+                    aria-label="Edit pending task"
+                    className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-500 shadow-sm transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-600"
+                    onClick={e => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      openEditTask(task);
+                    }}
+                  >
+                    <Pencil className="h-4 w-4" aria-hidden />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Delete pending task"
+                    className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-500 shadow-sm transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600"
+                    onClick={e => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (typeof window !== 'undefined' && !window.confirm('Delete this pending task?')) return;
+                      deletePendingTask(task.id);
+                    }}
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden />
+                  </button>
+                </div>
+              )}
+              </div>
             );
           })}
         </div>
       )}
 
-      {/* Create Task Modal */}
-      {isCreateModalOpen && (
+      {/* Create / Edit Task Modal */}
+      {(isCreateModalOpen || editTaskId) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-md overflow-hidden">
             <div className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
               <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-                <Plus className="w-5 h-5 text-blue-500" />
-                New Task
+                {editTaskId ? (
+                  <>
+                    <Pencil className="w-5 h-5 text-blue-500" />
+                    Edit Task
+                  </>
+                ) : (
+                  <>
+                    <Plus className="w-5 h-5 text-blue-500" />
+                    New Task
+                  </>
+                )}
               </h2>
-              <button onClick={() => setIsCreateModalOpen(false)} className="p-2 hover:bg-white rounded-full transition-colors border border-transparent hover:border-slate-100">
+              <button onClick={closeTaskFormModal} className="p-2 hover:bg-white rounded-full transition-colors border border-transparent hover:border-slate-100">
                 <X className="w-5 h-5 text-slate-400" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateTask} className="p-8 space-y-5">
+            <form onSubmit={handleTaskFormSubmit} className="p-8 space-y-5">
               <div>
                 <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Task Title</label>
                 <input
@@ -339,7 +430,7 @@ export default function TasksPage() {
 
               <button type="submit" className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold shadow-lg shadow-blue-100 transition-all active:scale-[0.98] mt-4 flex items-center justify-center gap-2">
                 <Check className="w-5 h-5" />
-                Create Task
+                {editTaskId ? 'Save changes' : 'Create Task'}
               </button>
             </form>
           </div>
@@ -365,16 +456,45 @@ export default function TasksPage() {
                   Assigned to {users.find(u => u.id === selectedTask.assignedTo)?.name || 'Unassigned'}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedTaskId(null);
-                }}
-                className="shrink-0 rounded-full border border-transparent p-2 transition-colors hover:border-slate-100 hover:bg-white"
-                title="Close"
-              >
-                <X className="h-5 w-5 text-slate-400" />
-              </button>
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                {canManagePendingTask(selectedTask) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      openEditTask(selectedTask);
+                      setSelectedTaskId(null);
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-sky-200 bg-white px-3 py-2 text-xs font-semibold text-sky-700 transition hover:bg-sky-50"
+                  >
+                    <Pencil className="h-4 w-4" aria-hidden />
+                    Edit
+                  </button>
+                )}
+                {canManagePendingTask(selectedTask) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (typeof window !== 'undefined' && !window.confirm('Delete this pending task?')) return;
+                      deletePendingTask(selectedTask.id);
+                      setSelectedTaskId(null);
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-600 transition hover:bg-rose-50"
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden />
+                    Delete
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedTaskId(null);
+                  }}
+                  className="shrink-0 rounded-full border border-transparent p-2 transition-colors hover:border-slate-100 hover:bg-white"
+                  title="Close"
+                >
+                  <X className="h-5 w-5 text-slate-400" />
+                </button>
+              </div>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 sm:px-6 sm:py-6 md:px-8 md:py-8">

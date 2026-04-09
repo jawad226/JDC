@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { CalendarClock, AlertCircle, UserCheck, Clock, Activity } from 'lucide-react';
+import { CalendarClock, AlertCircle, UserCheck, Clock, Activity, Filter } from 'lucide-react';
 import { useStore } from '@/lib/store';
+import type { Role } from '@/lib/store';
 
 export default function AvailabilityPage() {
   const { currentUser } = useStore();
@@ -14,15 +15,69 @@ export default function AvailabilityPage() {
   return <EmployeeAvailabilityView />;
 }
 
+const BOARD_ROLES: Role[] = ['Employee', 'HR', 'Team Leader'];
+type BoardRoleFilter = 'all' | Role;
+type BoardStatusFilter = 'all' | 'Available' | 'Unavailable' | 'Sick';
+
 function AdminAvailabilityBoard() {
   const { users, timesheets } = useStore();
+  const [roleFilter, setRoleFilter] = useState<BoardRoleFilter>('all');
+  const [statusFilter, setStatusFilter] = useState<BoardStatusFilter>('all');
 
-  const getStatusColor = (status?: string) => {
+  const filteredUsers = useMemo(() => {
+    return users.filter((u) => {
+      if (u.role === 'Pending User') return false;
+      if (roleFilter !== 'all' && u.role !== roleFilter) return false;
+      const st = u.status || 'Not Set';
+      if (statusFilter !== 'all') {
+        if (st !== statusFilter) return false;
+      }
+      return true;
+    });
+  }, [users, roleFilter, statusFilter]);
+
+  const getStatusAccent = (status?: string) => {
     switch (status) {
-      case 'Available': return 'bg-emerald-500';
-      case 'Unavailable': return 'bg-slate-400';
-      case 'Sick': return 'bg-rose-500';
-      default: return 'bg-slate-200';
+      case 'Available':
+        return {
+          dot: 'bg-emerald-500',
+          ring: 'ring-emerald-500/25',
+          border: 'border-emerald-200',
+          cardBg: 'bg-gradient-to-br from-white to-emerald-50/40',
+          stripe: 'bg-emerald-500',
+          badge: 'bg-emerald-100 text-emerald-800 border-emerald-200/80',
+          iconWrap: 'bg-emerald-100 text-emerald-600',
+        };
+      case 'Unavailable':
+        return {
+          dot: 'bg-amber-400',
+          ring: 'ring-amber-400/30',
+          border: 'border-amber-200',
+          cardBg: 'bg-gradient-to-br from-white to-amber-50/50',
+          stripe: 'bg-amber-400',
+          badge: 'bg-amber-100 text-amber-900 border-amber-200/80',
+          iconWrap: 'bg-amber-100 text-amber-700',
+        };
+      case 'Sick':
+        return {
+          dot: 'bg-rose-500',
+          ring: 'ring-rose-500/25',
+          border: 'border-rose-200',
+          cardBg: 'bg-gradient-to-br from-white to-rose-50/40',
+          stripe: 'bg-rose-500',
+          badge: 'bg-rose-100 text-rose-800 border-rose-200/80',
+          iconWrap: 'bg-rose-100 text-rose-600',
+        };
+      default:
+        return {
+          dot: 'bg-slate-300',
+          ring: 'ring-slate-300/25',
+          border: 'border-slate-200',
+          cardBg: 'bg-white',
+          stripe: 'bg-slate-300',
+          badge: 'bg-slate-100 text-slate-700 border-slate-200',
+          iconWrap: 'bg-slate-100 text-slate-500',
+        };
     }
   };
 
@@ -36,63 +91,155 @@ function AdminAvailabilityBoard() {
 
   return (
     <div className="max-w-6xl mx-auto space-y-8 pb-12">
-      <div className="bg-slate-900 rounded-[2.5rem] shadow-2xl p-10 relative overflow-hidden">
-        <div className="absolute top-0 right-0 -translate-y-1/2 translate-x-1/4 w-96 h-96 bg-blue-500 rounded-full opacity-10 blur-3xl" />
-        <div className="relative z-10 text-center md:text-left">
-          <h1 className="text-5xl font-light text-white tracking-tight leading-tight">
-            Team <br />
-            <span className="font-bold text-blue-400">Status Board</span>
-          </h1>
-          <p className="text-slate-400 mt-4 max-w-md">Monitor real-time team availability, working status, and scheduled absences across all departments.</p>
+      <div className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between border-b border-slate-200/80 pb-6">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">Team Status Board</h1>
+          <p className="text-slate-500 mt-1 text-sm max-w-xl">Availability and work activity across roles.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-slate-500">
+          <Filter className="w-4 h-4 shrink-0" aria-hidden />
+          <span className="text-xs font-bold uppercase tracking-widest">Filters</span>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-        {users.map(user => {
-          const isClockedIn = timesheets.some(t => t.userId === user.id && !t.clockOut);
-          const Icon = getStatusIcon(user.status);
-          
-          return (
-            <div key={user.id} className="bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-sm hover:shadow-md transition-all group relative overflow-hidden">
-              <div className="flex items-start justify-between mb-8">
-                <div className="flex items-center gap-4">
-                  <div className="relative">
-                    <div className="h-16 w-16 rounded-[1.25rem] bg-slate-50 flex items-center justify-center font-bold text-slate-400 border border-slate-100 text-xl">
+      <div className="flex flex-col gap-4">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Role</p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setRoleFilter('all')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-colors ${
+                roleFilter === 'all'
+                  ? 'bg-slate-900 text-white shadow-md'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              All
+            </button>
+            {BOARD_ROLES.map((r) => (
+              <button
+                key={r}
+                type="button"
+                onClick={() => setRoleFilter(r)}
+                className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-colors ${
+                  roleFilter === r
+                    ? 'bg-slate-900 text-white shadow-md'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {r === 'Team Leader' ? 'TL' : r}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Status</p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setStatusFilter('all')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-colors ${
+                statusFilter === 'all'
+                  ? 'bg-slate-900 text-white shadow-md'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              All
+            </button>
+            {(['Available', 'Unavailable', 'Sick'] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setStatusFilter(s)}
+                className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-colors border ${
+                  statusFilter === s
+                    ? s === 'Available'
+                      ? 'bg-emerald-600 text-white border-emerald-600 shadow-md'
+                      : s === 'Unavailable'
+                        ? 'bg-amber-500 text-white border-amber-500 shadow-md'
+                        : 'bg-rose-600 text-white border-rose-600 shadow-md'
+                    : s === 'Available'
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                      : s === 'Unavailable'
+                        ? 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100'
+                        : 'bg-rose-50 text-rose-800 border-rose-200 hover:bg-rose-100'
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {filteredUsers.length === 0 ? (
+        <p className="text-center text-slate-500 py-12 text-sm">No people match these filters.</p>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {filteredUsers.map((user) => {
+            const isClockedIn = timesheets.some((t) => t.userId === user.id && !t.clockOut);
+            const Icon = getStatusIcon(user.status);
+            const accent = getStatusAccent(user.status);
+
+            return (
+              <div
+                key={user.id}
+                className={`relative rounded-2xl p-6 border shadow-sm hover:shadow-lg transition-all overflow-hidden ${accent.cardBg} ${accent.border}`}
+              >
+                <div className={`absolute left-0 top-0 bottom-0 w-1 ${accent.stripe}`} aria-hidden />
+                <div className="flex items-start gap-4 pl-1">
+                  <div className="relative shrink-0">
+                    <div
+                      className={`h-14 w-14 rounded-2xl flex items-center justify-center font-bold text-lg border-2 border-white shadow-sm ${accent.iconWrap}`}
+                    >
                       {user.name.charAt(0)}
                     </div>
-                    <div className={`absolute -bottom-1 -right-1 w-5 h-5 rounded-full border-4 border-white ${getStatusColor(user.status)}`} />
+                    <div
+                      className={`absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full border-[3px] border-white ring-2 ${accent.dot} ${accent.ring}`}
+                    />
                   </div>
-                  <div>
-                    <h3 className="font-bold text-slate-800 text-lg leading-tight">{user.name}</h3>
-                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-0.5">{user.team}</p>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="font-bold text-slate-900 text-base leading-snug truncate">{user.name}</h3>
+                    <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mt-0.5">
+                      {user.team}
+                      <span className="text-slate-300 mx-1.5">·</span>
+                      {user.role === 'Team Leader' ? 'TL' : user.role}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-5 space-y-2.5 pl-1">
+                  <div className="flex items-center justify-between gap-3 rounded-xl bg-white/70 backdrop-blur-sm px-3.5 py-3 border border-slate-100/80">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <Icon className="w-4 h-4 shrink-0 text-slate-500" />
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest truncate">Status</span>
+                    </div>
+                    <span className={`text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-lg border shrink-0 ${accent.badge}`}>
+                      {user.status || 'Not Set'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 rounded-xl bg-white/70 backdrop-blur-sm px-3.5 py-3 border border-slate-100/80">
+                    <div className="flex items-center gap-2.5">
+                      <Activity className="w-4 h-4 shrink-0 text-slate-500" />
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Activity</span>
+                    </div>
+                    <span
+                      className={`text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-lg border ${
+                        isClockedIn
+                          ? 'bg-emerald-100 text-emerald-800 border-emerald-200/80'
+                          : 'bg-slate-100 text-slate-500 border-slate-200'
+                      }`}
+                    >
+                      {isClockedIn ? 'Working' : 'Away'}
+                    </span>
                   </div>
                 </div>
               </div>
-
-              <div className="grid grid-cols-1 gap-3">
-                 <div className="flex items-center justify-between p-4 bg-slate-50/50 rounded-2xl border border-slate-100/50">
-                    <div className="flex items-center gap-3">
-                       <Icon className="w-4 h-4 text-blue-500" />
-                       <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Current Status</span>
-                    </div>
-                    <span className="text-xs font-black text-slate-800">{user.status || 'Not Set'}</span>
-                 </div>
-                 <div className="flex items-center justify-between p-4 bg-slate-50/50 rounded-2xl border border-slate-100/50">
-                    <div className="flex items-center gap-3">
-                       <Activity className="w-4 h-4 text-emerald-500" />
-                       <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Work Activity</span>
-                    </div>
-                    <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                      isClockedIn ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-400'
-                    }`}>
-                      {isClockedIn ? 'Working' : 'Away'}
-                    </span>
-                 </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { GlobalAttendanceLog } from '@/components/attendance/GlobalAttendanceLog';
 import { ManualTimesheetLog } from '@/components/attendance/ManualTimesheetLog';
 import { useStore } from '@/lib/store';
+import { employeeDisplayId } from '@/lib/attendanceSite';
 import { format, startOfWeek, endOfWeek, isWithinInterval } from 'date-fns';
 import { Clock, TrendingUp, AlertCircle, Calendar, ArrowRight, UserCheck, Users, Check, Plus } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -59,20 +60,14 @@ function HRTimesheetView() {
 
 // ─── ADMIN: COMPANY-WIDE ATTENDANCE REPORT ─────────────────────
 function AdminTimesheetView() {
-  const { timesheets, users } = useStore();
-  const sortedTimesheets = [...timesheets].sort((a, b) => new Date(b.clockIn).getTime() - new Date(a.clockIn).getTime());
-
   return (
     <div className="max-w-6xl mx-auto space-y-8 pb-12">
-      <div className="bg-slate-900 rounded-[2.5rem] shadow-2xl p-10 relative overflow-hidden">
-        <div className="absolute top-0 right-0 -translate-y-1/2 translate-x-1/4 w-96 h-96 bg-blue-500 rounded-full opacity-10 blur-3xl" />
-        <div className="relative z-10">
-          <h1 className="text-5xl font-light text-white tracking-tight leading-tight">
-            Company <br />
-            <span className="font-bold text-blue-400">Time Records</span>
-          </h1>
-          <p className="text-slate-400 mt-4 max-w-md">Oversee company-wide attendance, track billable hours, and monitor employee punctuality trends.</p>
-        </div>
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900">Company Time Records</h1>
+        <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-600">
+          Company-wide attendance: filter by site (Web Development, MERN Stack, Full Stack, Frontend, Backend), by role
+          (Employees, HR, Team Leader), or search by employee ID. Export the filtered log to Excel or PDF.
+        </p>
       </div>
 
       <GlobalAttendanceLog />
@@ -89,10 +84,6 @@ function TeamLeaderTimesheetView() {
     .filter(t => teamMembers.some(m => m.id === t.userId))
     .sort((a, b) => new Date(b.clockIn).getTime() - new Date(a.clockIn).getTime());
 
-  const userTimesheets = timesheets
-    .filter(t => t.userId === currentUser?.id)
-    .sort((a, b) => new Date(b.clockIn).getTime() - new Date(a.clockIn).getTime());
-
   return (
     <div className="max-w-6xl mx-auto space-y-8 pb-12">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
@@ -101,7 +92,7 @@ function TeamLeaderTimesheetView() {
             <Users className="w-8 h-8 text-blue-500" />
             Team Attendance
           </h1>
-          <p className="text-slate-500 mt-2 font-medium">Monitor your team's working hours and attendance records.</p>
+          <p className="text-slate-500 mt-2 font-medium">Monitor the team&apos;s working hours and attendance records.</p>
         </div>
       </div>
 
@@ -262,7 +253,7 @@ function EmployeeTimesheetView() {
                 <th className="text-[10px] uppercase font-bold text-slate-400 tracking-widest py-5 px-8">Date</th>
                 <th className="text-[10px] uppercase font-bold text-slate-400 tracking-widest py-5 px-8 text-center">Timing (In/Out)</th>
                 <th className="text-[10px] uppercase font-bold text-slate-400 tracking-widest py-5 px-8 text-center">Summary</th>
-                <th className="text-[10px] uppercase font-bold text-slate-400 tracking-widest py-5 px-8 text-right">Status</th>
+                <th className="text-[10px] uppercase font-bold text-slate-400 tracking-widest py-5 px-8 text-right">ID</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
@@ -317,26 +308,8 @@ function EmployeeTimesheetView() {
                         )}
                       </div>
                     </td>
-                    <td className="py-6 px-8 text-right">
-                      {!entry.clockOut ? (
-                        (() => {
-                          const activeBreak = getActiveBreak(entry);
-                          if (activeBreak) {
-                            return (
-                              <span className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-100 shadow-sm animate-pulse">
-                                <div className="w-1.5 h-1.5 bg-amber-500 rounded-full" />ON BREAK
-                              </span>
-                            );
-                          }
-                          return (
-                            <span className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-600 border border-emerald-100 shadow-sm animate-pulse">
-                              <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full" />ACTIVE
-                            </span>
-                          );
-                        })()
-                      ) : (
-                        <span className="inline-flex items-center px-4 py-1.5 rounded-full text-xs font-bold bg-slate-50 text-slate-400 border border-slate-100">COMPLETED</span>
-                      )}
+                    <td className="py-6 px-8 text-right font-mono text-xs text-slate-700">
+                      {currentUser ? employeeDisplayId(currentUser) : '—'}
                     </td>
                   </tr>
                 ))
@@ -568,7 +541,7 @@ function TimesheetTable({ timesheets, users, title }: { timesheets: any[]; users
               <th className="text-[10px] uppercase font-bold text-slate-400 tracking-widest py-6 px-8">Date</th>
               <th className="text-[10px] uppercase font-bold text-slate-400 tracking-widest py-6 px-8 text-center">In / Out</th>
               <th className="text-[10px] uppercase font-bold text-slate-400 tracking-widest py-6 px-8 text-center">Total Hours</th>
-              <th className="text-[10px] uppercase font-bold text-slate-400 tracking-widest py-6 px-8 text-right">Status</th>
+              <th className="text-[10px] uppercase font-bold text-slate-400 tracking-widest py-6 px-8 text-right">ID</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-50">
@@ -609,13 +582,8 @@ function TimesheetTable({ timesheets, users, title }: { timesheets: any[]; users
                       <span className="text-sm font-black text-slate-800 tracking-tighter">{entry.totalHours ? entry.totalHours.toFixed(2) : '0.00'}</span>
                       <span className="text-[10px] font-bold text-slate-400 ml-1">HRS</span>
                     </td>
-                    <td className="py-6 px-8 text-right">
-                      {entry.lateMark && <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-50 text-rose-500 border border-rose-100 mr-2">LATE</span>}
-                      {entry.clockOut ? (
-                        <span className="inline-flex px-3 py-1 rounded-full text-[10px] font-bold bg-slate-100 text-slate-400">DONE</span>
-                      ) : (
-                        <span className="inline-flex px-3 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-600 border border-emerald-100 animate-pulse">ACTIVE</span>
-                      )}
+                    <td className="py-6 px-8 text-right font-mono text-xs text-slate-700">
+                      {employeeDisplayId(user, entry.userId)}
                     </td>
                   </tr>
                 );

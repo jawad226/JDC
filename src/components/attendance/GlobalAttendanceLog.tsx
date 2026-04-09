@@ -1,32 +1,25 @@
 'use client';
 
-import { useMemo, useState, Fragment } from 'react';
+import { useMemo, useState, Fragment, useCallback } from 'react';
 import { useStore } from '@/lib/store';
 import type { TimesheetEntry, User } from '@/lib/store';
 import { format, startOfWeek, endOfWeek } from 'date-fns';
 import {
-  ApprovedStatusPill,
   AttendanceLogPagination,
   BulkActionBar,
   StandardFilterBar,
   AttendanceLogToolbar,
   formatHoursMinutes,
 } from '@/components/attendance/attendanceLogUi';
+import { downloadExcelCsv, openAttendancePdfReport } from '@/lib/attendanceExport';
 import {
-  Calendar,
-  Building2,
-  User as UserIcon,
-  Shield,
-  ZoomIn,
-  ChevronLeft,
-  ChevronRight,
-  ChevronsLeft,
-  ChevronsRight,
-  FileWarning,
-  Download,
-  Send,
-  Trash2,
-} from 'lucide-react';
+  COMPANY_SITE_OPTIONS,
+  PROVIDER_ROLE_OPTIONS,
+  employeeDisplayId,
+  siteBucketForUser,
+  providerLabelForRole,
+} from '@/lib/attendanceSite';
+import { Calendar, Building2, User as UserIcon, Shield, FileSpreadsheet, FileDown } from 'lucide-react';
 
 type GroupRow = {
   id: string;
@@ -37,6 +30,10 @@ type GroupRow = {
   totalHours: number;
   user?: User;
 };
+
+function escapeAttr(s: string) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 
 function buildGroups(timesheets: TimesheetEntry[], users: User[]): GroupRow[] {
   const map = new Map<string, TimesheetEntry[]>();
@@ -83,20 +80,12 @@ export function GlobalAttendanceLog() {
 
   const allGroups = useMemo(() => buildGroups(timesheets, users), [timesheets, users]);
 
-  const sites = useMemo(() => {
-    const s = new Set<string>();
-    users.forEach((u) => s.add(u.team || u.department || 'General'));
-    return ['All sites', ...Array.from(s).sort()];
-  }, [users]);
-
-  const providers = useMemo(() => {
-    const s = new Set<string>();
-    users.forEach((u) => s.add(u.name));
-    return ['All providers', ...Array.from(s).sort()];
-  }, [users]);
+  const sites = useMemo(() => [...COMPANY_SITE_OPTIONS], []);
+  const providers = useMemo(() => [...PROVIDER_ROLE_OPTIONS], []);
 
   const [siteFilter, setSiteFilter] = useState('All sites');
   const [providerFilter, setProviderFilter] = useState('All providers');
+  const [idQuery, setIdQuery] = useState('');
   const [rangeStart, setRangeStart] = useState('');
   const [rangeEnd, setRangeEnd] = useState('');
 
@@ -108,10 +97,28 @@ export function GlobalAttendanceLog() {
   const resetPage = () => setPage(1);
 
   const filtered = useMemo(() => {
+    const q = idQuery.trim().toLowerCase();
     return allGroups.filter((g) => {
-      const site = g.user?.team || g.user?.department || 'General';
-      if (siteFilter !== 'All sites' && site !== siteFilter) return false;
-      if (providerFilter !== 'All providers' && g.user?.name !== providerFilter) return false;
+      const bucket = siteBucketForUser(g.user);
+      if (siteFilter !== 'All sites' && bucket !== siteFilter) return false;
+
+      if (providerFilter !== 'All providers') {
+        const pl = g.user ? providerLabelForRole(g.user.role) : 'Other';
+        if (providerFilter === 'Employees' && pl !== 'Employees') return false;
+        if (providerFilter === 'HR' && pl !== 'HR') return false;
+        if (providerFilter === 'Team Leader' && pl !== 'Team Leader') return false;
+      }
+
+      if (q && g.user) {
+        const idMatch =
+          g.user.id.toLowerCase().includes(q) ||
+          (g.user.employeeCode?.toLowerCase().includes(q) ?? false) ||
+          g.user.email.toLowerCase().includes(q);
+        if (!idMatch) return false;
+      } else if (q && !g.user) {
+        return false;
+      }
+
       if (rangeStart) {
         const rs = new Date(rangeStart);
         if (g.weekEnd < rs) return false;
@@ -123,7 +130,61 @@ export function GlobalAttendanceLog() {
       }
       return true;
     });
-  }, [allGroups, siteFilter, providerFilter, rangeStart, rangeEnd]);
+  }, [allGroups, siteFilter, providerFilter, idQuery, rangeStart, rangeEnd]);
+
+  const exportTargetGroups = useCallback(() => {
+    if (selected.size === 0) return filtered;
+    return filtered.filter((g) => selected.has(g.id));
+  }, [filtered, selected]);
+
+  const handleExportExcel = useCallback(() => {
+    const rows = exportTargetGroups();
+    if (rows.length === 0) return;
+    const header = ['Employee', 'Site', 'Provider', 'Period start', 'Period end', 'Hours', 'ID'];
+    const data = rows.map((g) => {
+      const site = siteBucketForUser(g.user);
+      const prov = g.user ? providerLabelForRole(g.user.role) : '—';
+      return [
+        g.user?.name ?? 'Unknown',
+        site,
+        prov,
+        format(g.weekStart, 'yyyy-MM-dd'),
+        format(g.weekEnd, 'yyyy-MM-dd'),
+        formatHoursMinutes(g.totalHours),
+        employeeDisplayId(g.user, g.userId),
+      ];
+    });
+    downloadExcelCsv(`company-time-records-${format(new Date(), 'yyyy-MM-dd')}`, header, data);
+  }, [exportTargetGroups]);
+
+  const handleExportPdf = useCallback(() => {
+    const rows = exportTargetGroups();
+    if (rows.length === 0) return;
+    const body = `
+      <table>
+        <thead><tr>
+          <th>Employee</th><th>Site</th><th>Provider</th><th>Period</th><th>Hours</th><th>ID</th>
+        </tr></thead>
+        <tbody>
+          ${rows
+            .map((g) => {
+              const site = siteBucketForUser(g.user);
+              const prov = g.user ? providerLabelForRole(g.user.role) : '—';
+              const period = `${format(g.weekStart, 'MM/dd/yyyy')} – ${format(g.weekEnd, 'MM/dd/yyyy')}`;
+              return `<tr>
+                <td>${escapeAttr(g.user?.name ?? 'Unknown')}</td>
+                <td>${escapeAttr(site)}</td>
+                <td>${escapeAttr(prov)}</td>
+                <td>${escapeAttr(period)}</td>
+                <td>${escapeAttr(formatHoursMinutes(g.totalHours))}</td>
+                <td>${escapeAttr(employeeDisplayId(g.user, g.userId))}</td>
+              </tr>`;
+            })
+            .join('')}
+        </tbody>
+      </table>`;
+    openAttendancePdfReport('Company time records', body);
+  }, [exportTargetGroups]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / rowsPerPage));
   const pageSafe = Math.min(page, totalPages);
@@ -159,6 +220,8 @@ export function GlobalAttendanceLog() {
             setSiteFilter={setSiteFilter}
             providerFilter={providerFilter}
             setProviderFilter={setProviderFilter}
+            idQuery={idQuery}
+            setIdQuery={setIdQuery}
             rangeStart={rangeStart}
             setRangeStart={setRangeStart}
             rangeEnd={rangeEnd}
@@ -166,7 +229,13 @@ export function GlobalAttendanceLog() {
             onFilterChange={resetPage}
           />
         }
-        actions={<BulkActionBar selectedSize={selected.size} />}
+        actions={
+          <BulkActionBar
+            selectedSize={selected.size}
+            onExportExcel={handleExportExcel}
+            onExportPdf={handleExportPdf}
+          />
+        }
       />
 
       {/* Table */}
@@ -188,7 +257,7 @@ export function GlobalAttendanceLog() {
                 <th className="px-3 py-3 font-semibold">Site</th>
                 <th className="px-3 py-3 font-semibold">Period</th>
                 <th className="px-3 py-3 font-semibold">Hours</th>
-                <th className="px-3 py-3 font-semibold">Status</th>
+                <th className="px-3 py-3 font-semibold">ID</th>
               </tr>
             </thead>
             <tbody>
@@ -201,7 +270,7 @@ export function GlobalAttendanceLog() {
               ) : (
                 paginated.map((g, idx) => {
                   const sr = (pageSafe - 1) * rowsPerPage + idx + 1;
-                  const site = g.user?.team || g.user?.department || '—';
+                  const site = siteBucketForUser(g.user);
                   const period = `${format(g.weekStart, 'MM/dd/yyyy')} - ${format(g.weekEnd, 'MM/dd/yyyy')}`;
                   const zebra = idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/80';
 
@@ -226,8 +295,8 @@ export function GlobalAttendanceLog() {
                         <td className="px-3 py-3 font-semibold tabular-nums text-slate-900">
                           {formatHoursMinutes(g.totalHours)}
                         </td>
-                        <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
-                          <ApprovedStatusPill />
+                        <td className="px-3 py-3 font-mono text-xs text-slate-700" onClick={(e) => e.stopPropagation()}>
+                          {employeeDisplayId(g.user, g.userId)}
                         </td>
                       </tr>
                       {expandedId === g.id && (
@@ -259,16 +328,55 @@ export function GlobalAttendanceLog() {
 }
 
 function TimesheetApprovalPanel({ group, onClose }: { group: GroupRow; onClose: () => void }) {
-  const site = group.user?.team || group.user?.department || '—';
+  const site = siteBucketForUser(group.user);
   const periodLabel = `${format(group.weekStart, 'MMM d')} - ${format(group.weekEnd, 'MMM d, yyyy')}`;
-  const badgeId = group.userId.slice(0, 4).toUpperCase();
+  const idLine = employeeDisplayId(group.user, group.userId);
+
+  const exportPanelExcel = () => {
+    const header = ['Sr#', 'Date', 'Clock In', 'Clock Out', 'Hours', 'ID'];
+    const rowId = idLine;
+    const data = group.entries.map((e, i) => [
+      i + 1,
+      format(new Date(e.clockIn), 'yyyy-MM-dd'),
+      format(new Date(e.clockIn), 'HH:mm'),
+      e.clockOut ? format(new Date(e.clockOut), 'HH:mm') : '—',
+      typeof e.totalHours === 'number' ? e.totalHours.toFixed(2) : '—',
+      rowId,
+    ]);
+    const safeName = (group.user?.name ?? 'employee').replace(/[^\w\-]+/g, '_');
+    downloadExcelCsv(`timesheet-${safeName}-${format(group.weekStart, 'yyyy-MM-dd')}`, header, data);
+  };
+
+  const exportPanelPdf = () => {
+    const prov = group.user ? providerLabelForRole(group.user.role) : '—';
+    const rows = group.entries
+      .map(
+        (e, i) =>
+          `<tr>
+            <td>${i + 1}</td>
+            <td>${escapeAttr(format(new Date(e.clockIn), 'MM/dd/yyyy'))}</td>
+            <td>${escapeAttr(format(new Date(e.clockIn), 'HH:mm'))} → ${e.clockOut ? escapeAttr(format(new Date(e.clockOut), 'HH:mm')) : '—'}</td>
+            <td>${typeof e.totalHours === 'number' ? e.totalHours.toFixed(2) : '—'}</td>
+            <td>${escapeAttr(idLine)}</td>
+          </tr>`
+      )
+      .join('');
+    const body = `
+      <p><strong>Employee:</strong> ${escapeAttr(group.user?.name ?? 'Unknown')} &nbsp;|&nbsp; <strong>Site:</strong> ${escapeAttr(site)} &nbsp;|&nbsp; <strong>Provider:</strong> ${escapeAttr(prov)}</p>
+      <p><strong>Period:</strong> ${escapeAttr(periodLabel)} &nbsp;|&nbsp; <strong>Total:</strong> ${escapeAttr(formatHoursMinutes(group.totalHours))}</p>
+      <table>
+        <thead><tr><th>Sr#</th><th>Date</th><th>In / Out</th><th>Hours</th><th>ID</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    openAttendancePdfReport(`Timesheet — ${group.user?.name ?? 'Employee'}`, body);
+  };
 
   return (
     <div className="bg-slate-50/90 p-4 sm:p-6">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="text-lg font-bold text-slate-900">Timesheet Approval</h3>
-          <p className="text-xs text-slate-500">Weekly bundle — click row again to collapse</p>
+          <h3 className="text-lg font-bold text-slate-900">Weekly timesheet detail</h3>
+          <p className="text-xs text-slate-500">Daily rows for this period — click the row again to collapse</p>
         </div>
         <button
           type="button"
@@ -290,7 +398,10 @@ function TimesheetApprovalPanel({ group, onClose }: { group: GroupRow; onClose: 
         <div className="mt-3 space-y-2 text-sm text-slate-700">
           <div className="flex items-center gap-2">
             <Building2 className="h-4 w-4 shrink-0 text-slate-500" />
-            <span>{site}</span>
+            <span>
+              <span className="text-slate-500">Site: </span>
+              {site}
+            </span>
           </div>
           <div className="flex items-center gap-2">
             <UserIcon className="h-4 w-4 shrink-0 text-slate-500" />
@@ -298,92 +409,61 @@ function TimesheetApprovalPanel({ group, onClose }: { group: GroupRow; onClose: 
           </div>
           <div className="flex items-center gap-2">
             <Shield className="h-4 w-4 shrink-0 text-slate-500" />
-            <span className="font-mono text-xs">{badgeId}</span>
-          </div>
-          <div className="flex items-center gap-2 pt-1">
-            <span className="text-slate-500">Status:</span>
-            <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-bold text-emerald-800">APPROVED</span>
+            <span className="font-mono text-xs">ID: {idLine}</span>
           </div>
         </div>
       </div>
 
       <div className="mb-4 overflow-hidden rounded-xl border border-slate-200 bg-white">
-        <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-2">
-          <div className="flex items-center gap-2 text-slate-600">
-            <ZoomIn className="h-4 w-4" />
-            <span className="text-xs">0%</span>
-            <ZoomIn className="h-4 w-4" />
-          </div>
-          <div className="flex items-center gap-1 text-slate-600">
-            <ChevronsLeft className="h-4 w-4" />
-            <ChevronLeft className="h-4 w-4" />
-            <span className="px-2 text-xs">1 / 0</span>
-            <ChevronRight className="h-4 w-4" />
-            <ChevronsRight className="h-4 w-4" />
-          </div>
+        <div className="border-b border-slate-200 bg-slate-50 px-3 py-2">
+          <span className="text-xs font-semibold text-slate-600">Daily entries</span>
         </div>
-        <div className="flex min-h-[180px] items-center justify-center bg-slate-50/50 px-4 py-12 text-center text-sm text-slate-500">
-          <div>
-            <FileWarning className="mx-auto mb-2 h-10 w-10 text-slate-300" />
-            PDF unavailable or failed to load. Please retry…
-          </div>
-        </div>
-      </div>
-
-      <div className="mb-4 overflow-hidden rounded-xl border border-slate-200 bg-white">
-        <table className="w-full text-left text-xs">
-          <thead>
-            <tr className="bg-blue-600 text-white">
-              <th className="px-3 py-2">Sr#</th>
-              <th className="px-3 py-2">Date</th>
-              <th className="px-3 py-2">In / Out</th>
-              <th className="px-3 py-2">Hours</th>
-              <th className="px-3 py-2">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {group.entries.map((e, i) => (
-              <tr key={e.id} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50/80'}>
-                <td className="border-b border-slate-100 px-3 py-2">{i + 1}</td>
-                <td className="border-b border-slate-100 px-3 py-2">{format(new Date(e.clockIn), 'MM/dd/yyyy')}</td>
-                <td className="border-b border-slate-100 px-3 py-2">
-                  {format(new Date(e.clockIn), 'HH:mm')} → {e.clockOut ? format(new Date(e.clockOut), 'HH:mm') : '—'}
-                </td>
-                <td className="border-b border-slate-100 px-3 py-2 font-medium tabular-nums">
-                  {typeof e.totalHours === 'number' ? e.totalHours.toFixed(2) : '—'}
-                </td>
-                <td className="border-b border-slate-100 px-3 py-2">
-                  <span className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-700">
-                    Approved
-                  </span>
-                </td>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[640px] text-left text-xs">
+            <thead>
+              <tr className="bg-blue-600 text-white">
+                <th className="px-3 py-2">Sr#</th>
+                <th className="px-3 py-2">Date</th>
+                <th className="px-3 py-2">In / Out</th>
+                <th className="px-3 py-2">Hours</th>
+                <th className="px-3 py-2">ID</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {group.entries.map((e, i) => (
+                <tr key={e.id} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50/80'}>
+                  <td className="border-b border-slate-100 px-3 py-2">{i + 1}</td>
+                  <td className="border-b border-slate-100 px-3 py-2">{format(new Date(e.clockIn), 'MM/dd/yyyy')}</td>
+                  <td className="border-b border-slate-100 px-3 py-2">
+                    {format(new Date(e.clockIn), 'HH:mm')} → {e.clockOut ? format(new Date(e.clockOut), 'HH:mm') : '—'}
+                  </td>
+                  <td className="border-b border-slate-100 px-3 py-2 font-medium tabular-nums">
+                    {typeof e.totalHours === 'number' ? e.totalHours.toFixed(2) : '—'}
+                  </td>
+                  <td className="border-b border-slate-100 px-3 py-2 font-mono text-[10px] text-slate-700">{idLine}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
-          className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"
+          onClick={exportPanelExcel}
+          className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-semibold text-emerald-900 hover:bg-emerald-100"
         >
-          <Download className="h-4 w-4" />
-          Download PDF
+          <FileSpreadsheet className="h-4 w-4" />
+          Excel
         </button>
         <button
           type="button"
-          className="inline-flex items-center gap-2 rounded-lg bg-cyan-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-cyan-600"
+          onClick={exportPanelPdf}
+          className="inline-flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-semibold text-rose-900 hover:bg-rose-100"
         >
-          <Send className="h-4 w-4" />
-          Send to Client
-        </button>
-        <button
-          type="button"
-          className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-700"
-        >
-          <Trash2 className="h-4 w-4" />
-          Delete Timesheet
+          <FileDown className="h-4 w-4" />
+          PDF
         </button>
       </div>
     </div>

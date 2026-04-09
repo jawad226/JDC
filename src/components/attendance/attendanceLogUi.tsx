@@ -1,37 +1,31 @@
 'use client';
 
 import { Fragment, type ReactNode } from 'react';
+import {
+  Menu,
+  Calendar,
+  FileSpreadsheet,
+  Clock,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  FileDown,
+} from 'lucide-react';
 
 export function formatHoursMinutes(totalHours: number) {
   const h = Math.floor(totalHours);
   const m = Math.round((totalHours - h) * 60) % 60;
   return `${h}h ${m}m`;
 }
-import {
-  Menu,
-  Calendar,
-  ChevronDown,
-  Download,
-  Send,
-  Check,
-  Clock,
-  ChevronLeft,
-  ChevronRight,
-  ChevronsLeft,
-  ChevronsRight,
-} from 'lucide-react';
 
-/** Matches reference: light grey pill, amber clock, "Approved", chevron */
+/** Read-only status (not a dropdown). */
 export function ApprovedStatusPill() {
   return (
-    <button
-      type="button"
-      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-700 shadow-sm"
-    >
+    <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-700">
       <Clock className="h-3.5 w-3.5 text-amber-500" />
       Approved
-      <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
-    </button>
+    </span>
   );
 }
 
@@ -138,29 +132,35 @@ export function AttendanceLogToolbar({
   );
 }
 
-export function BulkActionBar({ selectedSize }: { selectedSize: number }) {
+export function BulkActionBar({
+  selectedSize,
+  onExportExcel,
+  onExportPdf,
+}: {
+  selectedSize: number;
+  onExportExcel: () => void;
+  onExportPdf: () => void;
+}) {
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="mr-1 text-xs text-slate-500">
+        {selectedSize > 0 ? `${selectedSize} selected` : 'All filtered rows'}
+      </span>
       <button
         type="button"
-        className="inline-flex items-center gap-2 rounded-lg bg-sky-100 px-4 py-2 text-sm font-semibold text-sky-800 hover:bg-sky-200"
+        onClick={onExportExcel}
+        className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-900 hover:bg-emerald-100"
       >
-        <Download className="h-4 w-4" />
-        Download ZIP
+        <FileSpreadsheet className="h-4 w-4" />
+        Excel
       </button>
       <button
         type="button"
-        className="inline-flex items-center gap-2 rounded-lg bg-cyan-100 px-4 py-2 text-sm font-semibold text-cyan-900 hover:bg-cyan-200"
+        onClick={onExportPdf}
+        className="inline-flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-900 hover:bg-rose-100"
       >
-        <Send className="h-4 w-4" />
-        Send ({selectedSize})
-      </button>
-      <button
-        type="button"
-        className="inline-flex items-center gap-2 rounded-lg bg-emerald-100 px-4 py-2 text-sm font-semibold text-emerald-900 hover:bg-emerald-200"
-      >
-        <Check className="h-4 w-4" />
-        Approve ({selectedSize})
+        <FileDown className="h-4 w-4" />
+        PDF
       </button>
     </div>
   );
@@ -173,6 +173,8 @@ export function StandardFilterBar({
   setSiteFilter,
   providerFilter,
   setProviderFilter,
+  idQuery,
+  setIdQuery,
   rangeStart,
   setRangeStart,
   rangeEnd,
@@ -185,6 +187,8 @@ export function StandardFilterBar({
   setSiteFilter: (v: string) => void;
   providerFilter: string;
   setProviderFilter: (v: string) => void;
+  idQuery: string;
+  setIdQuery: (v: string) => void;
   rangeStart: string;
   setRangeStart: (v: string) => void;
   rangeEnd: string;
@@ -226,6 +230,19 @@ export function StandardFilterBar({
             </option>
           ))}
         </select>
+      </label>
+      <label className="flex min-w-[160px] flex-1 flex-col gap-1 text-xs font-semibold text-slate-500">
+        ID search
+        <input
+          type="search"
+          value={idQuery}
+          placeholder="Employee ID or code"
+          onChange={(e) => {
+            setIdQuery(e.target.value);
+            onFilterChange();
+          }}
+          className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 outline-none placeholder:text-slate-400 focus:ring-2 focus:ring-blue-100"
+        />
       </label>
       <label className="flex min-w-[120px] flex-col gap-1 text-xs font-semibold text-slate-500">
         From

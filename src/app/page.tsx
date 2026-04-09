@@ -1,7 +1,7 @@
 'use client';
 
 import { useStore, User } from '@/lib/store';
-import { Play, Square, AlertCircle, Clock, CheckCircle2, Calendar, TrendingUp, ArrowRight, UserCheck, Timer, Users, Activity, Briefcase, Target, BarChart3, Shield, Coffee } from 'lucide-react';
+import { Play, Square, AlertCircle, Clock, CheckCircle2, Calendar, TrendingUp, ArrowRight, UserCheck, Timer, Users, Activity, Target, BarChart3, Shield, Coffee } from 'lucide-react';
 import { format, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay } from 'date-fns';
 import { useEffect, useState, useMemo } from 'react';
 
@@ -24,21 +24,6 @@ function StatCard({ icon: Icon, label, value, color, bg }: { icon: any; label: s
       </div>
       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{label}</p>
       <p className="text-2xl font-black text-slate-900 tracking-tight">{value}</p>
-    </div>
-  );
-}
-
-function HeroHeader({ title, highlight, subtitle }: { title: string; highlight: string; subtitle: string }) {
-  return (
-    <div className="bg-slate-900 rounded-[2.5rem] shadow-2xl p-10 relative overflow-hidden">
-      <div className="absolute top-0 right-0 -translate-y-1/2 translate-x-1/4 w-96 h-96 bg-blue-500 rounded-full opacity-10 blur-3xl" />
-      <div className="relative z-10">
-        <h1 className="text-5xl font-light text-white tracking-tight leading-tight">
-          {title} <br />
-          <span className="font-bold text-blue-400">{highlight}</span>
-        </h1>
-        <p className="text-slate-400 mt-4 max-w-md">{subtitle}</p>
-      </div>
     </div>
   );
 }
@@ -278,7 +263,7 @@ function TaskList({ tasks }: { tasks: any[] }) {
 
 // ─── 1. ADMIN DASHBOARD ────────────────────────────────────────────
 function AdminDashboard() {
-  const { users, timesheets, tasks, leaves, teams } = useStore();
+  const { users, timesheets, tasks, leaves } = useStore();
   const now = new Date();
 
   const activeEmployees = timesheets.filter(t => !t.clockOut).length;
@@ -288,7 +273,7 @@ function AdminDashboard() {
 
   return (
     <div className="max-w-6xl mx-auto space-y-8 pb-12">
-      <HeroHeader title="System" highlight="Overview" subtitle="Monitor company performance, manage team availability, and oversee administrative operations in real-time." />
+      <h1 className="text-2xl font-bold text-slate-900 tracking-tight">System Overview</h1>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-5">
         <StatCard icon={Users} label="Workforce" value={users.filter(u => u.role !== 'Pending User').length} color="text-blue-500" bg="bg-blue-50" />
@@ -298,65 +283,39 @@ function AdminDashboard() {
         <StatCard icon={Shield} label="Pending Approval" value={pendingUsers} color="text-purple-500" bg="bg-purple-50" />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Live employee status */}
-        <div className="lg:col-span-2 bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-sm">
-          <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2">
-            <Activity className="w-5 h-5 text-blue-500" />
-            Real-time Employee Status
-          </h2>
-          <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2">
-            {users.filter(u => u.role !== 'Pending User').map(user => {
-              const isActive = timesheets.some(t => t.userId === user.id && !t.clockOut);
-              return (
-                <div key={user.id} className="flex items-center justify-between p-4 rounded-2xl hover:bg-slate-50 transition-colors border border-transparent hover:border-slate-100">
-                  <div className="flex items-center gap-4">
-                    <div className="h-10 w-10 rounded-xl bg-slate-100 flex items-center justify-center font-bold text-slate-500">{user.name.charAt(0)}</div>
-                    <div>
-                      <p className="text-sm font-bold text-slate-800">{user.name}</p>
-                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{user.role} • {user.team}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                      user.status === 'Available' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' :
-                      user.status === 'Sick' ? 'bg-rose-50 text-rose-600 border-rose-100' :
-                      'bg-slate-50 text-slate-400 border-slate-100'
-                    }`}>{user.status || 'N/A'}</span>
-                    {isActive ? (
-                      <span className="px-3 py-1 bg-emerald-50 text-emerald-600 text-[10px] font-bold rounded-full border border-emerald-100 animate-pulse">WORKING</span>
-                    ) : (
-                      <span className="px-3 py-1 bg-slate-50 text-slate-300 text-[10px] font-bold rounded-full border border-slate-100">OFFLINE</span>
-                    )}
+      {/* Live employee status */}
+      <div className="bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-sm">
+        <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2">
+          <Activity className="w-5 h-5 text-blue-500" />
+          Real-time Employee Status
+        </h2>
+        <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2">
+          {users.filter(u => u.role !== 'Pending User').map(user => {
+            const isActive = timesheets.some(t => t.userId === user.id && !t.clockOut);
+            return (
+              <div key={user.id} className="flex items-center justify-between p-4 rounded-2xl hover:bg-slate-50 transition-colors border border-transparent hover:border-slate-100">
+                <div className="flex items-center gap-4">
+                  <div className="h-10 w-10 rounded-xl bg-slate-100 flex items-center justify-center font-bold text-slate-500">{user.name.charAt(0)}</div>
+                  <div>
+                    <p className="text-sm font-bold text-slate-800">{user.name}</p>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{user.role} • {user.team}</p>
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Team Breakdown */}
-        <div className="bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-sm h-fit">
-          <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2">
-            <Briefcase className="w-5 h-5 text-indigo-500" />
-            Team Breakdown
-          </h2>
-          <div className="space-y-6">
-            {teams.map(team => {
-              const count = users.filter(u => u.team === team && u.role !== 'Pending User').length;
-              return (
-                <div key={team}>
-                  <div className="flex justify-between text-xs font-bold text-slate-500 mb-2">
-                    <span>{team}</span>
-                    <span className="text-slate-800">{count} Members</span>
-                  </div>
-                  <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                    <div className="h-full bg-indigo-500 rounded-full transition-all duration-500" style={{ width: `${Math.max((count / Math.max(users.length, 1)) * 100, 4)}%` }} />
-                  </div>
+                <div className="flex items-center gap-3">
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                    user.status === 'Available' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' :
+                    user.status === 'Sick' ? 'bg-rose-50 text-rose-600 border-rose-100' :
+                    'bg-slate-50 text-slate-400 border-slate-100'
+                  }`}>{user.status || 'N/A'}</span>
+                  {isActive ? (
+                    <span className="px-3 py-1 bg-emerald-50 text-emerald-600 text-[10px] font-bold rounded-full border border-emerald-100 animate-pulse">WORKING</span>
+                  ) : (
+                    <span className="px-3 py-1 bg-slate-50 text-slate-300 text-[10px] font-bold rounded-full border border-slate-100">OFFLINE</span>
+                  )}
                 </div>
-              );
-            })}
-          </div>
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
