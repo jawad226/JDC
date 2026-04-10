@@ -19,7 +19,8 @@ import {
   CalendarDays,
   AlignLeft,
 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useStore, useShallow } from '@/lib/store';
 import type { Task, TaskHistoryEntry, TaskPriority, TaskWorkflowStatus } from '@/lib/store';
 import { format } from 'date-fns';
@@ -27,6 +28,7 @@ import { format } from 'date-fns';
 type StatusFilter = 'All' | TaskWorkflowStatus;
 
 export default function TasksPage() {
+  const searchParams = useSearchParams();
   const {
     tasks: allTasks,
     currentUser,
@@ -58,6 +60,13 @@ export default function TasksPage() {
   const [editTaskId, setEditTaskId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('Pending');
+
+  useEffect(() => {
+    const id = searchParams.get('taskId');
+    if (!id) return;
+    if (!allTasks.some(t => t.id === id)) return;
+    setSelectedTaskId(id);
+  }, [searchParams, allTasks]);
 
   const canCreateTask =
     currentUser?.role === 'Admin' || currentUser?.role === 'HR' || currentUser?.role === 'Team Leader';
@@ -286,7 +295,7 @@ export default function TasksPage() {
             className="inline-flex w-fit items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-blue-700 active:scale-[0.98]"
           >
             <Plus className="h-4 w-4" />
-            New task
+            Add
           </button>
         )}
       </div>

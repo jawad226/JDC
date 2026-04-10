@@ -1,8 +1,10 @@
 'use client';
 
-import { useStore, useShallow, User } from '@/lib/store';
-import { Play, Square, AlertCircle, Clock, CheckCircle2, Calendar, TrendingUp, ArrowRight, UserCheck, Timer, Users, Activity, Target, BarChart3, Shield, Coffee } from 'lucide-react';
-import { format, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay } from 'date-fns';
+import { useStore, useShallow, type Task } from '@/lib/store';
+import Link from 'next/link';
+import type { LucideIcon } from 'lucide-react';
+import { Play, Square, AlertCircle, Clock, CheckCircle2, Calendar, TrendingUp, UserCheck, Timer, Users, Activity, Target, BarChart3, Shield, Coffee } from 'lucide-react';
+import { format, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay, subDays, isWithinInterval } from 'date-fns';
 import { useEffect, useState, useMemo } from 'react';
 
 // ─── ROUTER ────────────────────────────────────────────────────────
@@ -16,7 +18,7 @@ export default function Dashboard() {
 }
 
 // ─── SHARED COMPONENTS ─────────────────────────────────────────────
-function StatCard({ icon: Icon, label, value, color, bg }: { icon: any; label: string; value: number | string; color: string; bg: string }) {
+function StatCard({ icon: Icon, label, value, color, bg }: { icon: LucideIcon; label: string; value: number | string; color: string; bg: string }) {
   return (
     <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm group hover:shadow-md transition-all">
       <div className={`${bg} ${color} w-10 h-10 rounded-xl flex items-center justify-center mb-4`}>
@@ -77,96 +79,132 @@ function TimerWidget() {
   }, [activeTimesheet, now, activeBreak]);
 
   const isPaused = !!activeBreak;
+  const hasAnyBreak = (activeTimesheet?.breaks?.length || 0) > 0;
+  const lineColorClass = !isClockedIn
+    ? 'bg-blue-600'
+    : activeBreak
+      ? 'bg-rose-600'
+      : hasAnyBreak
+        ? 'bg-blue-600'
+        : 'bg-amber-500';
+
+  const siteLabel = currentUser?.workSite ?? currentUser?.team ?? '—';
+  const roleLabel = currentUser?.department ?? currentUser?.role ?? '—';
 
   return (
-    <div className="bg-slate-900 rounded-[2.5rem] shadow-2xl p-10 flex flex-col md:flex-row items-center justify-between gap-8 relative overflow-hidden">
-      <div className="absolute top-0 right-0 -translate-y-1/2 translate-x-1/4 w-96 h-96 bg-blue-500 rounded-full opacity-10 blur-3xl animate-pulse" />
-      <div className="absolute bottom-0 left-0 translate-y-1/2 -translate-x-1/4 w-96 h-96 bg-indigo-500 rounded-full opacity-10 blur-3xl" />
-
-      <div className="relative z-10 text-center md:text-left">
-        <h1 className="text-5xl font-light text-white tracking-tight leading-tight">
-          Hello, <br />
-          <span className="font-bold text-blue-400">{currentUser?.name.split(' ')[0]}</span>
+    <div className="space-y-5">
+      <div>
+        <h1 className="text-3xl font-semibold text-slate-900 tracking-tight">
+          Hello, <span className="font-black">{currentUser?.name.split(' ')[0]}</span>
         </h1>
-        <div className="flex items-center justify-center md:justify-start gap-4 mt-6">
-          <div className="bg-slate-800/50 backdrop-blur-md px-4 py-2 rounded-2xl border border-slate-700/50">
-            <p className="text-[10px] uppercase font-bold text-slate-400 tracking-widest mb-0.5">Today is</p>
-            <p className="text-white text-sm font-semibold">{format(now, "eeee, MMM d")}</p>
-          </div>
-          {elapsed && (
-            <div
-              className={`backdrop-blur-md px-4 py-2 rounded-2xl border ${
-                isPaused ? 'bg-amber-500/10 border-amber-500/20' : 'bg-emerald-500/10 border-emerald-500/20'
-              }`}
-            >
-              <p
-                className={`text-[10px] uppercase font-bold tracking-widest mb-0.5 ${
-                  isPaused ? 'text-amber-400' : 'text-emerald-400'
-                }`}
-              >
-                {isPaused ? 'On Break (Paused)' : 'Working'}
-              </p>
-              <p className={`text-sm font-mono font-bold ${isPaused ? 'text-amber-200' : 'text-emerald-300'}`}>{elapsed}</p>
-            </div>
-          )}
-        </div>
-
-        {activeTimesheet?.lateMark && (
-          <div className="mt-6 flex items-center space-x-2 text-rose-400 bg-rose-500/10 border border-rose-500/20 px-4 py-2 rounded-full w-fit mx-auto md:mx-0 animate-bounce">
-            <AlertCircle size={16} />
-            <span className="text-xs font-bold uppercase tracking-widest">Late Mark Applied Today</span>
-          </div>
-        )}
+        <p className="mt-1 text-xs text-slate-400 font-bold uppercase tracking-widest">
+          {format(now, 'eee MMMM d yyyy')} • {format(now, 'HH:mm')}
+        </p>
       </div>
 
-      <div className="relative z-10">
-        {!isClockedIn ? (
-          <button onClick={clockIn} className="group relative flex flex-col items-center justify-center w-48 h-48 bg-blue-600 rounded-full text-white shadow-[0_0_50px_-12px_rgba(37,99,235,0.5)] hover:bg-blue-500 transition-all hover:scale-105 active:scale-95 focus:outline-none ring-8 ring-blue-500/10">
-            <div className="absolute inset-0 rounded-full bg-blue-400 opacity-20 blur-2xl group-hover:opacity-40 transition-opacity animate-pulse" />
-            <Play className="h-14 w-14 ml-2 mb-1 drop-shadow-lg" fill="currentColor" />
-            <span className="text-2xl font-black mt-1 tracking-tighter">START</span>
-            <span className="text-[10px] font-bold text-blue-200 mt-1 uppercase tracking-widest">Clock In Now</span>
-          </button>
-        ) : (
-          <div className="flex flex-col items-center gap-5">
-            <button
-              onClick={activeBreak ? endBreak : startBreak}
-              className={`group relative flex flex-col items-center justify-center w-40 h-40 rounded-full text-white transition-all hover:scale-105 active:scale-95 focus:outline-none ring-8 ${
-                activeBreak ? 'bg-emerald-600 ring-emerald-500/10 hover:bg-emerald-500' : 'bg-amber-600 ring-amber-500/10 hover:bg-amber-500'
-              }`}
-              title={activeBreak ? 'End break' : 'Start break'}
-            >
-              <div
-                className={`absolute inset-0 rounded-full opacity-20 blur-2xl group-hover:opacity-40 transition-opacity animate-pulse ${
-                  activeBreak ? 'bg-emerald-400' : 'bg-amber-400'
-                }`}
-              />
-              <Coffee className="h-10 w-10 mb-2 drop-shadow-lg" fill="currentColor" />
-              <span className="text-xl font-black mt-1 tracking-tighter">
-                {activeBreak ? 'BREAK OUT' : 'BREAK IN'}
-              </span>
-              <span className="text-[10px] font-bold mt-1 uppercase tracking-widest select-none text-white/80">
-                {activeBreak ? `Since ${format(new Date(activeBreak.startTime), "HH:mm")}` : 'During your shift'}
-              </span>
-            </button>
+      <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6 p-6 md:p-7">
+          <div className="flex items-start gap-4">
+            <div className={`w-1.5 self-stretch rounded-full ${lineColorClass}`} />
+            <div className="min-w-0">
+              <p className="text-xs font-black uppercase tracking-widest text-blue-600">Regular</p>
 
-            <button
-              onClick={clockOut}
-              disabled={!!activeBreak}
-              className={`group relative flex flex-col items-center justify-center w-40 h-40 bg-rose-600 rounded-full text-white shadow-[0_0_50px_-12px_rgba(225,29,72,0.5)] hover:bg-rose-500 transition-all active:scale-95 focus:outline-none ring-8 ring-rose-500/10 ${
-                activeBreak ? 'opacity-50 cursor-not-allowed hover:bg-rose-600' : 'hover:scale-105'
-              }`}
-              title={activeBreak ? 'End break before clocking out' : 'Clock out'}
-            >
-              <div className="absolute inset-0 rounded-full bg-rose-400 opacity-20 blur-2xl group-hover:opacity-40 transition-opacity animate-pulse" />
-              <Square className="h-12 w-12 mb-2 drop-shadow-lg" fill="currentColor" />
-              <span className="text-2xl font-black mt-1 tracking-tighter">STOP</span>
-              <span className="text-[10px] font-bold text-rose-200 mt-1 uppercase tracking-widest select-none">
-                {activeBreak ? 'Break first' : `Since ${format(new Date(activeTimesheet.clockIn), "HH:mm")}`}
-              </span>
-            </button>
+              <div className="mt-4 grid gap-2">
+                <div className="flex items-center gap-2 text-sm font-semibold text-slate-600">
+                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-lg border border-slate-100 bg-slate-50 text-slate-500">
+                    <Target className="h-4 w-4" />
+                  </span>
+                  {siteLabel}
+                </div>
+                <div className="flex items-center gap-2 text-sm font-semibold text-slate-600">
+                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-lg border border-slate-100 bg-slate-50 text-slate-500">
+                    <UserCheck className="h-4 w-4" />
+                  </span>
+                  {roleLabel}
+                </div>
+              </div>
+
+              {elapsed && (
+                <div
+                  className={`mt-5 inline-flex items-center gap-3 rounded-2xl border px-4 py-2 ${
+                    isPaused ? 'bg-amber-50 border-amber-100' : 'bg-emerald-50 border-emerald-100'
+                  }`}
+                >
+                  <span
+                    className={`text-[10px] font-black uppercase tracking-widest ${
+                      isPaused ? 'text-amber-700' : 'text-emerald-700'
+                    }`}
+                  >
+                    {isPaused ? 'On Break (Paused)' : 'Working'}
+                  </span>
+                  <span
+                    className={`text-sm font-mono font-black ${isPaused ? 'text-amber-800' : 'text-emerald-800'}`}
+                  >
+                    {elapsed}
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
-        )}
+
+          <div className="shrink-0 flex items-center justify-center md:justify-end">
+            {!isClockedIn ? (
+              <button
+                onClick={clockIn}
+                className="group relative flex h-24 w-24 md:h-28 md:w-28 items-center justify-center rounded-full bg-blue-600 text-white shadow-lg shadow-blue-100 transition-all hover:bg-blue-500 active:scale-95 focus:outline-none ring-8 ring-blue-600/10"
+                title="Clock in"
+              >
+                <div className="absolute inset-0 rounded-full bg-blue-400 opacity-20 blur-2xl transition-opacity group-hover:opacity-40" />
+                <div className="relative z-10 flex flex-col items-center">
+                  <Play className="h-8 w-8 ml-0.5 drop-shadow" fill="currentColor" />
+                  <span className="mt-1 text-[10px] font-black uppercase tracking-widest">Clock In</span>
+                </div>
+              </button>
+            ) : (
+              <div className="flex flex-row gap-4">
+                {activeBreak ? (
+                  <button
+                    onClick={endBreak}
+                    className="group relative flex h-24 w-24 md:h-28 md:w-28 items-center justify-center rounded-full bg-rose-600 text-white shadow-lg shadow-rose-100 transition-all hover:bg-rose-500 active:scale-95 focus:outline-none ring-8 ring-rose-500/10"
+                    title="Break out"
+                  >
+                    <div className="absolute inset-0 rounded-full bg-rose-400 opacity-20 blur-2xl transition-opacity group-hover:opacity-40" />
+                    <div className="relative z-10 flex flex-col items-center">
+                      <Coffee className="h-7 w-7 drop-shadow" fill="currentColor" />
+                      <span className="mt-1 text-[10px] font-black uppercase tracking-widest">Break Out</span>
+                    </div>
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={startBreak}
+                      className="group relative flex h-24 w-24 md:h-28 md:w-28 items-center justify-center rounded-full bg-amber-500 text-white shadow-lg shadow-amber-100 transition-all hover:bg-amber-400 active:scale-95 focus:outline-none ring-8 ring-amber-500/10"
+                      title="Break in"
+                    >
+                      <div className="absolute inset-0 rounded-full bg-amber-400 opacity-20 blur-2xl transition-opacity group-hover:opacity-40" />
+                      <div className="relative z-10 flex flex-col items-center">
+                        <Coffee className="h-7 w-7 drop-shadow" fill="currentColor" />
+                        <span className="mt-1 text-[10px] font-black uppercase tracking-widest">Break In</span>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={clockOut}
+                      className="group relative flex h-24 w-24 md:h-28 md:w-28 items-center justify-center rounded-full bg-blue-600 text-white shadow-lg shadow-blue-100 transition-all hover:bg-blue-500 active:scale-95 focus:outline-none ring-8 ring-blue-600/10"
+                      title="Clock out"
+                    >
+                      <div className="absolute inset-0 rounded-full bg-blue-400 opacity-20 blur-2xl transition-opacity group-hover:opacity-40" />
+                      <div className="relative z-10 flex flex-col items-center">
+                        <Square className="h-7 w-7 drop-shadow" fill="currentColor" />
+                        <span className="mt-1 text-[10px] font-black uppercase tracking-widest">Clock Out</span>
+                      </div>
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -177,18 +215,36 @@ function WeeklyChart() {
     useShallow((s) => ({ currentUser: s.currentUser, timesheets: s.timesheets }))
   );
   const now = new Date();
-  const weekStart = startOfWeek(now, { weekStartsOn: 1 });
-  const weekEnd = endOfWeek(now, { weekStartsOn: 1 });
-  const weekDays = eachDayOfInterval({ start: weekStart, end: weekEnd });
+  const [range, setRange] = useState<'7d' | '30d' | '90d'>('7d');
 
-  const weeklyStats = useMemo(() => {
-    return weekDays.map(day => {
-      const dayEntry = timesheets.find(t => t.userId === currentUser?.id && isSameDay(new Date(t.clockIn), day));
-      return { day: format(day, 'EEE'), hours: dayEntry?.totalHours || 0, isLate: dayEntry?.lateMark || false };
-    });
-  }, [timesheets, currentUser, weekDays]);
+  const rangeStart = useMemo(() => {
+    if (range === '90d') return subDays(now, 89);
+    if (range === '30d') return subDays(now, 29);
+    return startOfWeek(now, { weekStartsOn: 1 });
+  }, [now, range]);
 
-  const totalWeeklyHours = weeklyStats.reduce((acc, curr) => acc + curr.hours, 0);
+  const rangeEnd = useMemo(() => {
+    if (range === '7d') return endOfWeek(now, { weekStartsOn: 1 });
+    return now;
+  }, [now, range]);
+
+  const days = eachDayOfInterval({ start: rangeStart, end: rangeEnd });
+
+  const stats = days.map(day => {
+    const dayEntries = timesheets.filter(
+      t => t.userId === currentUser?.id && isSameDay(new Date(t.clockIn), day)
+    );
+    const hours = dayEntries.reduce((acc, t) => acc + (t.totalHours || 0), 0);
+    const isLate = dayEntries.some(t => !!t.lateMark);
+    return { day, label: range === '7d' ? format(day, 'EEE') : format(day, 'd MMM'), hours, isLate };
+  });
+
+  const totalHours = useMemo(() => {
+    return timesheets
+      .filter(t => t.userId === currentUser?.id)
+      .filter(t => isWithinInterval(new Date(t.clockIn), { start: rangeStart, end: rangeEnd }))
+      .reduce((acc, t) => acc + (t.totalHours || 0), 0);
+  }, [timesheets, currentUser, rangeStart, rangeEnd]);
 
   return (
     <div className="bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-sm relative overflow-hidden">
@@ -196,16 +252,50 @@ function WeeklyChart() {
         <div>
           <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
             <TrendingUp className="w-5 h-5 text-blue-500" />
-            Weekly Performance
+            Performance
           </h2>
-          <p className="text-xs text-slate-400 font-medium mt-1">Total: {totalWeeklyHours.toFixed(1)} hours this week</p>
+          <p className="text-xs text-slate-400 font-medium mt-1">
+            Total: {totalHours.toFixed(1)} hours ({range === '7d' ? 'Weekly' : range === '30d' ? '30 Days' : '90 Days'})
+          </p>
         </div>
-        <div className="bg-slate-50 px-3 py-1 rounded-full border border-slate-100 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Live</div>
+        <div className="flex items-center gap-2">
+          <div className="inline-flex items-center rounded-2xl border border-slate-100 bg-slate-50 p-1">
+            <button
+              type="button"
+              onClick={() => setRange('7d')}
+              className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors ${
+                range === '7d' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Weekly
+            </button>
+            <button
+              type="button"
+              onClick={() => setRange('30d')}
+              className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors ${
+                range === '30d' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              30 Days
+            </button>
+            <button
+              type="button"
+              onClick={() => setRange('90d')}
+              className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors ${
+                range === '90d' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              90 Days
+            </button>
+          </div>
+        </div>
       </div>
       <div className="flex justify-between items-end h-48 px-4">
-        {weeklyStats.map((stat, i) => (
+        {stats.map((stat, i) => (
           <div key={i} className="flex flex-col items-center gap-3 h-full justify-end group cursor-help">
-            <div className="relative w-10 sm:w-12 flex flex-col justify-end h-full">
+            <div
+              className={`relative flex flex-col justify-end h-full ${range === '7d' ? 'w-10 sm:w-12' : 'w-2.5 sm:w-3'}`}
+            >
               <div
                 className={`w-full rounded-t-xl transition-all duration-500 shadow-sm ${stat.isLate ? 'bg-gradient-to-t from-rose-500 to-rose-400' : 'bg-gradient-to-t from-blue-600 to-blue-400'}`}
                 style={{ height: `${Math.min((stat.hours / 8) * 100, 100)}%`, minHeight: stat.hours > 0 ? '10%' : '0' }}
@@ -217,9 +307,13 @@ function WeeklyChart() {
                 )}
               </div>
             </div>
-            <span className={`text-[10px] font-bold uppercase tracking-widest ${isSameDay(weekDays[i], now) ? 'text-blue-600' : 'text-slate-400'}`}>
-              {stat.day}
-            </span>
+            {range === '7d' ? (
+              <span
+                className={`text-[10px] font-bold uppercase tracking-widest ${isSameDay(stat.day, now) ? 'text-blue-600' : 'text-slate-400'}`}
+              >
+                {stat.label}
+              </span>
+            ) : null}
           </div>
         ))}
       </div>
@@ -227,7 +321,7 @@ function WeeklyChart() {
   );
 }
 
-function TaskList({ tasks }: { tasks: any[] }) {
+function TaskList({ tasks }: { tasks: Task[] }) {
   const statusBadgeClass = (status: string) => {
     if (status === 'Pending') return 'bg-amber-50 text-amber-700 border-amber-100';
     if (status === 'In Progress') return 'bg-blue-50 text-blue-700 border-blue-100';
@@ -246,7 +340,11 @@ function TaskList({ tasks }: { tasks: any[] }) {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {tasks.map(task => (
-            <div key={task.id} className="bg-white rounded-3xl shadow-sm border border-slate-100 p-6 hover:shadow-md transition-all group border-l-4 border-l-blue-500">
+            <Link
+              key={task.id}
+              href={`/schedule?taskId=${encodeURIComponent(task.id)}`}
+              className="block bg-white rounded-3xl shadow-sm border border-slate-100 p-6 hover:shadow-md transition-all group border-l-4 border-l-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-100"
+            >
               <div className="flex justify-between items-start mb-4">
                 <h3 className="font-bold text-slate-800 text-base leading-tight group-hover:text-blue-600 transition-colors">{task.title}</h3>
                 <span className={`text-[10px] font-bold px-2 py-1 rounded-lg uppercase tracking-wider ${
@@ -264,7 +362,7 @@ function TaskList({ tasks }: { tasks: any[] }) {
                   {task.status}
                 </span>
               </div>
-            </div>
+            </Link>
           ))}
         </div>
       )}
@@ -553,7 +651,7 @@ function UserDashboard() {
       ...tasks.filter(t => t.assignedTo === currentUser?.id && t.status === 'Approved').map(t => ({
         type: 'Task', title: `Approved Task: ${t.title}`, time: now.toISOString(), icon: CheckCircle2, color: 'text-indigo-500'
       }))
-    ].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime()).slice(0, 5);
+    ].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime()).slice(0, 3);
     return activities;
   }, [timesheets, leaves, tasks, currentUser, now]);
 
