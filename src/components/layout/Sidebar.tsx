@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useMemo, useState } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { BRAND_LOGO_URL } from '@/lib/brand';
@@ -7,6 +8,8 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useStore } from '@/lib/store';
 import Cookies from 'js-cookie';
 import { cn } from '@/lib/utils';
+import { totalUnreadMessagesForViewer } from '@/lib/messaging';
+import { subscribeChatSocket } from '@/lib/chat-socket';
 import {
   LayoutDashboard,
   Calendar,
@@ -14,15 +17,16 @@ import {
   CalendarClock,
   ClipboardList,
   UsersRound,
-  HelpCircle,
   LogOut,
   ShieldCheck,
   UserCog,
   BarChart3,
+  MessageSquare,
 } from 'lucide-react';
 
 const sidebarItems = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
+  { name: 'Messages', href: '/messages', icon: MessageSquare },
   { name: 'Team Data', href: '/team-data', icon: BarChart3 },
   { name: 'Schedule', href: '/schedule', icon: Calendar },
   { name: 'Timesheet', href: '/timesheet', icon: Clock },
@@ -33,16 +37,22 @@ const sidebarItems = [
   { name: 'Admin Control', href: '/admin', icon: ShieldCheck },
 ];
 
-const bottomItems = [
-  { name: 'Help', href: '/help', icon: HelpCircle },
-  { name: 'Logout', href: '/logout', icon: LogOut },
-];
+const bottomItems = [{ name: 'Logout', href: '/logout', icon: LogOut }];
 
 export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const currentUser = useStore((s) => s.currentUser);
   const setCurrentUser = useStore((s) => s.setCurrentUser);
+  const users = useStore((s) => s.users);
+  const chatThreads = useStore((s) => s.chatThreads);
+  const [socketRev, setSocketRev] = useState(0);
+  useEffect(() => subscribeChatSocket(() => setSocketRev((n) => n + 1)), []);
+
+  const messagesUnreadTotal = useMemo(() => {
+    if (!currentUser) return 0;
+    return totalUnreadMessagesForViewer(chatThreads, currentUser, users);
+  }, [chatThreads, currentUser, users, socketRev]);
 
   const filteredSidebarItems = sidebarItems.filter((item) => {
     if (item.name === 'Admin Control' && currentUser?.role !== 'Admin') return false;
@@ -79,14 +89,24 @@ export function Sidebar() {
               key={item.name}
               href={item.href}
               className={cn(
-                'flex items-center px-4 py-3 rounded-xl text-sm font-medium transition-colors',
+                'flex items-center justify-between gap-2 px-4 py-3 rounded-xl text-sm font-medium transition-colors',
                 isActive
                   ? 'bg-slate-50 text-slate-900 border-l-4 border-slate-300'
                   : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
               )}
             >
-              <Icon className={cn("mr-3 h-5 w-5", isActive ? 'text-slate-600' : 'text-slate-400')} />
-              {item.name}
+              <span className="flex min-w-0 items-center">
+                <Icon className={cn('mr-3 h-5 w-5 shrink-0', isActive ? 'text-slate-600' : 'text-slate-400')} />
+                {item.name}
+              </span>
+              {item.href === '/messages' && messagesUnreadTotal > 0 && (
+                <span
+                  className="inline-flex min-h-[22px] min-w-[22px] shrink-0 items-center justify-center rounded-full bg-emerald-600 px-1.5 text-[11px] font-bold leading-none text-white shadow-sm"
+                  aria-label={`${messagesUnreadTotal} unread messages`}
+                >
+                  {messagesUnreadTotal > 99 ? '99+' : messagesUnreadTotal}
+                </span>
+              )}
             </Link>
           );
         })}

@@ -18,12 +18,37 @@ import {
   UserRound,
   CalendarDays,
   AlignLeft,
+  ArrowRightCircle,
+  Paperclip,
+  Info,
+  AlertCircle,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useStore, useShallow } from '@/lib/store';
-import type { Task, TaskHistoryEntry, TaskPriority, TaskWorkflowStatus } from '@/lib/store';
+import { useStore, useShallow, getManagementTaskDisplayStatus, isTeamLeaderCreatedTask } from '@/lib/store';
+import type { Task, TaskHistoryEntry, TaskPriority, TaskWorkflowStatus, Role } from '@/lib/store';
 import { format } from 'date-fns';
+
+const MAX_TASK_FILE_BYTES = 5 * 1024 * 1024;
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result as string);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function deadlineToIso(dateYmd: string): string {
+  return new Date(`${dateYmd}T12:00:00`).toISOString();
+}
 
 type StatusFilter = 'All' | TaskWorkflowStatus;
 
@@ -41,6 +66,7 @@ export default function TasksPage() {
     approveTask,
     deletePendingTask,
     updatePendingTask,
+    forwardTaskToTeamLeader,
   } = useStore(
     useShallow((s) => ({
       tasks: s.tasks,
@@ -48,6 +74,7 @@ export default function TasksPage() {
       users: s.users,
       availability: s.availability,
       createTask: s.createTask,
+      forwardTaskToTeamLeader: s.forwardTaskToTeamLeader,
       startTaskWork: s.startTaskWork,
       submitTask: s.submitTask,
       moveTaskToReview: s.moveTaskToReview,
@@ -60,64 +87,165 @@ export default function TasksPage() {
   const [editTaskId, setEditTaskId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('Pending');
-
-  useEffect(() => {
-    const id = searchParams.get('taskId');
-    if (!id) return;
-    if (!allTasks.some(t => t.id === id)) return;
-    setSelectedTaskId(id);
-  }, [searchParams, allTasks]);
-
-  const canCreateTask =
-    currentUser?.role === 'Admin' || currentUser?.role === 'HR' || currentUser?.role === 'Team Leader';
-
-  const tasks = (() => {
-    if (!currentUser) return [];
-    if (currentUser.role === 'Admin' || currentUser.role === 'HR') return allTasks;
-    if (currentUser.role === 'Team Leader') {
-      const teamMembers = users.filter(u => u.team === currentUser.team);
-      return allTasks.filter(t => teamMembers.some(m => m.id === t.assignedTo));
-    }
-    return allTasks.filter(t => t.assignedTo === currentUser.id);
-  })();
-
-  const filteredTasks = useMemo(() => {
-    const list = statusFilter === 'All' ? tasks : tasks.filter(t => t.status === statusFilter);
-    return [...list].sort((a, b) => new Date(a.deadline).getTime() - new Date(b.deadline).getTime());
-  }, [tasks, statusFilter]);
-
-  const selectedTask = useMemo(() => {
-    if (!selectedTaskId) return null;
-    return allTasks.find(t => t.id === selectedTaskId) || null;
-  }, [allTasks, selectedTaskId]);
-
-  const assignableUsers = (() => {
-    if (!currentUser) return [];
-    if (currentUser.role === 'Admin' || currentUser.role === 'HR') {
-      return users.filter(u => u.role !== 'Pending User');
-    }
-    if (currentUser.role === 'Team Leader') {
-      return users.filter(u => u.team === currentUser.team && u.role !== 'Pending User');
-    }
-    return [];
-  })();
-
+  const [forwardTlId, setForwardTlId] = useState('');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [assignedTo, setAssignedTo] = useState('');
   const [priority, setPriority] = useState<TaskPriority>('Medium');
   const [deadline, setDeadline] = useState('');
+  const [createAttachmentFile, setCreateAttachmentFile] = useState<File | null>(null);
+  const [attachmentError, setAttachmentError] = useState('');
+  const [isCreatingTask, setIsCreatingTask] = useState(false);
+  const createFileInputRef = useRef<HTMLInputElement>(null);
+
+  type ScheduleToastTone = 'success' | 'info' | 'error';
+  const [scheduleToast, setScheduleToast] = useState<{
+    message: string;
+    tone: ScheduleToastTone;
+  } | null>(null);
+  const [confirmAction, setConfirmAction] = useState<{
+    title: string;
+    message: string;
+    confirmLabel: string;
+    onConfirm: () => void;
+  } | null>(null);
+
+  const showScheduleToast = (message: string, tone: ScheduleToastTone = 'success') => {
+    setScheduleToast({ message, tone });
+  };
+
+  useEffect(() => {
+    if (!scheduleToast) return;
+    const t = window.setTimeout(() => setScheduleToast(null), 4200);
+    return () => clearTimeout(t);
+  }, [scheduleToast]);
+
+  useEffect(() => {
+    const id = searchParams.get('taskId');
+    if (!id) return;
+    const task = allTasks.find(t => t.id === id);
+    if (!task) return;
+    if (
+      currentUser &&
+      (currentUser.role === 'Admin' || currentUser.role === 'HR') &&
+      isTeamLeaderCreatedTask(task, users)
+    ) {
+      setSelectedTaskId(null);
+      return;
+    }
+    setSelectedTaskId(id);
+  }, [searchParams, allTasks, currentUser, users]);
+
+  useEffect(() => {
+    setForwardTlId('');
+  }, [selectedTaskId]);
+
+  const canCreateTask =
+    currentUser?.role === 'Admin' || currentUser?.role === 'Team Leader';
+
+  const tasks = (() => {
+    if (!currentUser) return [];
+    if (currentUser.role === 'Admin' || currentUser.role === 'HR') {
+      return allTasks.filter(t => !isTeamLeaderCreatedTask(t, users));
+    }
+    if (currentUser.role === 'Team Leader') {
+      return allTasks.filter(t => {
+        if (t.assignedTo === currentUser.id) return true;
+        if (t.assignedBy === currentUser.id) return true;
+        const a = users.find(u => u.id === t.assignedTo);
+        return a?.role === 'Employee' && a.team === currentUser.team;
+      });
+    }
+    return allTasks.filter(t => t.assignedTo === currentUser.id);
+  })();
+
+  const matchesStatusFilter = (t: Task, viewer: Role | undefined) => {
+    if (statusFilter === 'All') return true;
+    if (viewer === 'Admin' || viewer === 'HR') {
+      const display = getManagementTaskDisplayStatus(t, users, viewer);
+      if (statusFilter === 'Pending') return display === 'Pending';
+      if (statusFilter === 'In Progress') return display === 'Working' || t.status === 'In Progress';
+      return t.status === statusFilter;
+    }
+    return t.status === statusFilter;
+  };
+
+  const filteredTasks = useMemo(() => {
+    const list =
+      statusFilter === 'All' ? tasks : tasks.filter(t => matchesStatusFilter(t, currentUser?.role));
+    return [...list].sort((a, b) => new Date(a.deadline).getTime() - new Date(b.deadline).getTime());
+  }, [tasks, statusFilter, currentUser?.role, users]);
+
+  const selectedTask = useMemo(() => {
+    if (!selectedTaskId) return null;
+    const task = allTasks.find(t => t.id === selectedTaskId) || null;
+    if (!task) return null;
+    if (
+      currentUser &&
+      (currentUser.role === 'Admin' || currentUser.role === 'HR') &&
+      isTeamLeaderCreatedTask(task, users)
+    )
+      return null;
+    return task;
+  }, [allTasks, selectedTaskId, currentUser, users]);
+
+  const teamEmployeesForTl = useMemo(() => {
+    if (!currentUser?.team) return [];
+    return users.filter(u => u.role === 'Employee' && u.team === currentUser.team);
+  }, [users, currentUser]);
+
+  /** Create: Admin → HR only. Team Leader → own team employees. */
+  const assignableUsersCreate = useMemo(() => {
+    if (!currentUser) return [];
+    if (currentUser.role === 'Admin') return users.filter(u => u.role === 'HR');
+    if (currentUser.role === 'Team Leader') return teamEmployeesForTl;
+    return [];
+  }, [users, currentUser, teamEmployeesForTl]);
+
+  const teamLeaderOptions = useMemo(
+    () => users.filter(u => u.role === 'Team Leader'),
+    [users]
+  );
+
+  const assignableUsersAdminEdit = useMemo(
+    () => users.filter(u => u.role === 'HR' || u.role === 'Team Leader'),
+    [users]
+  );
+
+  const assigneeSelectOptions = useMemo(() => {
+    if (!editTaskId) return assignableUsersCreate;
+    if (currentUser?.role === 'Admin') return assignableUsersAdminEdit;
+    if (currentUser?.role === 'Team Leader') return teamEmployeesForTl;
+    return [];
+  }, [
+    editTaskId,
+    assignableUsersCreate,
+    assignableUsersAdminEdit,
+    teamEmployeesForTl,
+    currentUser?.role,
+  ]);
 
   const canManagePendingTask = (task: Task) => {
     if (!currentUser || task.status !== 'Pending') return false;
-    if (currentUser.role !== 'Admin' && currentUser.role !== 'HR' && currentUser.role !== 'Team Leader') {
-      return false;
+    const assignee = users.find(u => u.id === task.assignedTo);
+    if (currentUser.role === 'Admin') return !isTeamLeaderCreatedTask(task, users);
+    if (currentUser.role === 'HR') {
+      return assignee?.role === 'HR' && task.assignedTo === currentUser.id;
     }
     if (currentUser.role === 'Team Leader') {
-      const assignee = users.find(u => u.id === task.assignedTo);
-      if (!assignee || assignee.team !== currentUser.team) return false;
+      if (task.assignedBy !== currentUser.id) return false;
+      return assignee?.role === 'Employee' && assignee.team === currentUser.team;
     }
-    return true;
+    return false;
+  };
+
+  const canForwardToTeamLead = (task: Task | null) => {
+    if (!task || !currentUser) return false;
+    if (currentUser.role !== 'HR') return false;
+    if (task.status !== 'Pending') return false;
+    if (task.assignedTo !== currentUser.id) return false;
+    const assignee = users.find(u => u.id === task.assignedTo);
+    return assignee?.role === 'HR';
   };
 
   const resetTaskForm = () => {
@@ -126,6 +254,9 @@ export default function TasksPage() {
     setAssignedTo('');
     setPriority('Medium');
     setDeadline('');
+    setCreateAttachmentFile(null);
+    setAttachmentError('');
+    if (createFileInputRef.current) createFileInputRef.current.value = '';
   };
 
   const closeTaskFormModal = () => {
@@ -143,31 +274,81 @@ export default function TasksPage() {
     setAssignedTo(task.assignedTo);
     setPriority(task.priority);
     setDeadline(format(new Date(task.deadline), 'yyyy-MM-dd'));
+    setCreateAttachmentFile(null);
+    setAttachmentError('');
+    if (createFileInputRef.current) createFileInputRef.current.value = '';
   };
 
-  const handleTaskFormSubmit = (e: React.FormEvent) => {
+  const handleCreateAttachmentChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) {
+      setCreateAttachmentFile(null);
+      setAttachmentError('');
+      return;
+    }
+    if (f.size > MAX_TASK_FILE_BYTES) {
+      setCreateAttachmentFile(null);
+      setAttachmentError(`Maximum file size is ${MAX_TASK_FILE_BYTES / (1024 * 1024)} MB.`);
+      e.target.value = '';
+      return;
+    }
+    setCreateAttachmentFile(f);
+    setAttachmentError('');
+  };
+
+  const createFormReady =
+    Boolean(
+      title.trim() &&
+        assignedTo &&
+        deadline &&
+        createAttachmentFile &&
+        createAttachmentFile.size > 0 &&
+        createAttachmentFile.size <= MAX_TASK_FILE_BYTES
+    );
+
+  const editFormReady = Boolean(title.trim() && assignedTo && deadline);
+
+  const handleTaskFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentUser) return;
     if (editTaskId) {
+      if (!editFormReady) return;
       updatePendingTask(editTaskId, {
-        title,
+        title: title.trim(),
         description,
         assignedTo,
         priority,
-        deadline,
+        deadline: deadlineToIso(deadline),
       });
       setEditTaskId(null);
-    } else {
+      resetTaskForm();
+      showScheduleToast('Task Updated Successfully', 'success');
+      return;
+    }
+
+    if (!createFormReady || !createAttachmentFile) return;
+    setIsCreatingTask(true);
+    try {
+      const dataUrl = await readFileAsDataUrl(createAttachmentFile);
       createTask({
-        title,
-        description,
+        title: title.trim(),
+        description: description.trim() || undefined,
         assignedTo,
-        priority,
-        deadline,
+        deadline: deadlineToIso(deadline),
+        attachment: {
+          fileName: createAttachmentFile.name,
+          fileSize: createAttachmentFile.size,
+          dataUrl,
+        },
       });
       setIsCreateModalOpen(false);
+      resetTaskForm();
+      showScheduleToast('Task Created Successfully', 'success');
+    } catch {
+      setAttachmentError('Could not read the file. Try another file.');
+    } finally {
+      setIsCreatingTask(false);
     }
-    resetTaskForm();
   };
 
   const filterOptions: { value: StatusFilter; label: string }[] = [
@@ -181,6 +362,7 @@ export default function TasksPage() {
 
   const statusBadge = (status: string) => {
     if (status === 'Pending') return 'bg-amber-50 text-amber-700 border-amber-100';
+    if (status === 'Working') return 'bg-blue-50 text-blue-700 border-blue-100';
     if (status === 'In Progress') return 'bg-blue-50 text-blue-700 border-blue-100';
     if (status === 'Submitted') return 'bg-indigo-50 text-indigo-700 border-indigo-100';
     if (status === 'Review') return 'bg-violet-50 text-violet-700 border-violet-100';
@@ -197,36 +379,42 @@ export default function TasksPage() {
   const reviewerCanActOnTask = (task: Task | null) => {
     if (!task || !currentUser) return false;
     if (task.status !== 'Submitted' && task.status !== 'Review') return false;
-    if (currentUser.role !== 'HR' && currentUser.role !== 'Team Leader') return false;
+    if (isTeamLeaderCreatedTask(task, users)) {
+      return currentUser.role === 'Team Leader' && task.assignedBy === currentUser.id;
+    }
+    if (currentUser.role === 'Admin' || currentUser.role === 'HR') return true;
     if (currentUser.role === 'Team Leader') {
+      if (task.assignedTo === currentUser.id) return false;
       const assignedUser = users.find(u => u.id === task.assignedTo);
       return !!assignedUser && assignedUser.team === currentUser.team;
     }
-    return true;
+    return false;
   };
 
   const reviewerCanMoveToReview = (task: Task | null) => {
     if (!task || !currentUser) return false;
     if (task.status !== 'Submitted') return false;
-    if (currentUser.role !== 'HR' && currentUser.role !== 'Team Leader') return false;
+    if (isTeamLeaderCreatedTask(task, users)) {
+      return currentUser.role === 'Team Leader' && task.assignedBy === currentUser.id;
+    }
+    if (currentUser.role === 'Admin' || currentUser.role === 'HR') return true;
     if (currentUser.role === 'Team Leader') {
+      if (task.assignedTo === currentUser.id) return false;
       const assignedUser = users.find(u => u.id === task.assignedTo);
       return !!assignedUser && assignedUser.team === currentUser.team;
     }
-    return true;
+    return false;
   };
 
   const showWorkflowPanel = useMemo(() => {
     if (!selectedTask || !currentUser) return false;
-    if (
-      currentUser.role === 'Employee' &&
+    const isWorker =
+      (currentUser.role === 'Employee' || currentUser.role === 'Team Leader') &&
       selectedTask.assignedTo === currentUser.id &&
       (selectedTask.status === 'Pending' ||
         selectedTask.status === 'In Progress' ||
-        selectedTask.status === 'Review')
-    ) {
-      return true;
-    }
+        selectedTask.status === 'Review');
+    if (isWorker) return true;
     if (reviewerCanMoveToReview(selectedTask)) return true;
     if (reviewerCanActOnTask(selectedTask)) return true;
     return false;
@@ -234,7 +422,7 @@ export default function TasksPage() {
 
   const outsideAvailabilityHint = useMemo(() => {
     if (!selectedTask || !currentUser) return false;
-    if (currentUser.role !== 'Employee') return false;
+    if (currentUser.role !== 'Employee' && currentUser.role !== 'Team Leader') return false;
     if (selectedTask.assignedTo !== currentUser.id) return false;
 
     if (currentUser.status && currentUser.status !== 'Available') return true;
@@ -257,12 +445,12 @@ export default function TasksPage() {
         </h1>
         <p className="text-slate-500 mt-2">
           {currentUser?.role === 'Employee'
-            ? 'Work through tasks and submit for HR/Team Leader approval.'
+            ? 'Complete tasks and submit for approval.'
             : currentUser?.role === 'Team Leader'
-              ? `Review and approve submissions for the ${currentUser?.team} team.`
+              ? 'Work on assigned tasks and manage your team’s tasks.'
               : currentUser?.role === 'HR'
-                ? 'Review and approve submissions across the organization.'
-                : 'Monitor task progress and create new tasks.'}
+                ? 'Receive projects from Admin and forward to a Team Lead.'
+                : 'Assign work to HR; status follows your workflow rules.'}
         </p>
       </div>
 
@@ -310,6 +498,10 @@ export default function TasksPage() {
             const assignee = users.find(u => u.id === task.assignedTo);
             const dl = new Date(task.deadline);
             const deptOrTeam = assignee?.department ?? assignee?.team ?? '—';
+            const listLabel =
+              currentUser?.role === 'Admin' || currentUser?.role === 'HR'
+                ? getManagementTaskDisplayStatus(task, users, currentUser.role)
+                : task.status;
             return (
               <div key={task.id} className="relative">
               <button
@@ -332,10 +524,10 @@ export default function TasksPage() {
                     </p>
                     <span
                       className={`inline-flex rounded-full border px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${statusBadge(
-                        task.status
+                        listLabel
                       )}`}
                     >
-                      {task.status}
+                      {listLabel}
                     </span>
                     <p className="text-xs font-medium text-slate-500">{taskRefLabel(task.id)}</p>
                     <p className="flex items-center gap-2 text-xs text-slate-600">
@@ -374,8 +566,16 @@ export default function TasksPage() {
                     onClick={e => {
                       e.preventDefault();
                       e.stopPropagation();
-                      if (typeof window !== 'undefined' && !window.confirm('Delete this pending task?')) return;
-                      deletePendingTask(task.id);
+                      setConfirmAction({
+                        title: 'Delete task',
+                        message: 'Delete this pending task? This cannot be undone.',
+                        confirmLabel: 'Delete',
+                        onConfirm: () => {
+                          deletePendingTask(task.id);
+                          setConfirmAction(null);
+                          showScheduleToast('Task deleted.', 'info');
+                        },
+                      });
                     }}
                   >
                     <Trash2 className="h-4 w-4" aria-hidden />
@@ -402,6 +602,7 @@ export default function TasksPage() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="task-form-modal-title"
+            onClick={(e) => e.stopPropagation()}
           >
             <div className="relative shrink-0 border-b border-slate-800/10 bg-gradient-to-r from-slate-900 via-slate-800 to-blue-950 px-5 py-5 sm:px-6 sm:py-6">
               <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_80%_80%_at_100%_0%,rgba(59,130,246,0.15),transparent)]" />
@@ -419,7 +620,7 @@ export default function TasksPage() {
                       {editTaskId ? 'Edit task' : 'New task'}
                     </h2>
                     <p className="mt-0.5 text-sm text-slate-300">
-                      {editTaskId ? 'Update details before work starts.' : 'Define scope, assign owner, and set a due date.'}
+                      {editTaskId ? 'Update details before work starts.' : 'New task'}
                     </p>
                   </div>
                 </div>
@@ -475,8 +676,16 @@ export default function TasksPage() {
                       className="w-full appearance-none rounded-xl border border-slate-200 bg-white py-3 pl-4 pr-10 text-sm font-medium text-slate-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-500/15"
                       required
                     >
-                      <option value="">Select team member</option>
-                      {assignableUsers.map((user) => {
+                      <option value="">
+                        {editTaskId
+                          ? currentUser?.role === 'Team Leader'
+                            ? 'Select employee'
+                            : 'Select HR or Team Lead'
+                          : currentUser?.role === 'Team Leader'
+                            ? 'Select team employee'
+                            : 'Select HR'}
+                      </option>
+                      {assigneeSelectOptions.map((user) => {
                         const dept = user.department ?? user.team ?? '—';
                         return (
                           <option key={user.id} value={user.id} title={`${user.role} · ${dept}`}>
@@ -490,29 +699,6 @@ export default function TasksPage() {
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                       </svg>
                     </span>
-                  </div>
-                  <p className="mt-1.5 text-xs text-slate-500">
-                    Only eligible people for your role are listed (team scope for leaders).
-                  </p>
-                </div>
-
-                <div>
-                  <span className="mb-2 block text-[11px] font-bold uppercase tracking-widest text-slate-500">Priority</span>
-                  <div className="grid grid-cols-3 gap-2 rounded-xl border border-slate-200 bg-slate-100/80 p-1">
-                    {(['Low', 'Medium', 'High'] as const).map((p) => (
-                      <button
-                        key={p}
-                        type="button"
-                        onClick={() => setPriority(p)}
-                        className={`rounded-lg py-2.5 text-xs font-bold transition ${
-                          priority === p
-                            ? 'bg-white text-blue-700 shadow-sm ring-1 ring-slate-200/80'
-                            : 'text-slate-500 hover:text-slate-800'
-                        }`}
-                      >
-                        {p}
-                      </button>
-                    ))}
                   </div>
                 </div>
 
@@ -536,13 +722,40 @@ export default function TasksPage() {
                   </div>
                 </div>
 
+                {!editTaskId && (
+                  <div>
+                    <label
+                      htmlFor="task-attachment-input"
+                      className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-slate-500"
+                    >
+                      <Paperclip className="h-3.5 w-3.5 text-blue-500" aria-hidden />
+                      Attachment <span className="font-normal normal-case text-slate-400">(required · max 5 MB)</span>
+                    </label>
+                    <input
+                      ref={createFileInputRef}
+                      id="task-attachment-input"
+                      type="file"
+                      onChange={handleCreateAttachmentChange}
+                      className="block w-full cursor-pointer rounded-xl border border-dashed border-slate-300 bg-white px-3 py-3 text-sm font-medium text-slate-700 shadow-sm outline-none transition file:mr-3 file:cursor-pointer file:rounded-lg file:border-0 file:bg-blue-50 file:px-3 file:py-1.5 file:text-xs file:font-bold file:text-blue-700 hover:border-blue-300 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/15"
+                    />
+                    {createAttachmentFile && (
+                      <p className="mt-2 text-xs font-medium text-emerald-700">
+                        Selected: {createAttachmentFile.name} ({formatFileSize(createAttachmentFile.size)})
+                      </p>
+                    )}
+                    {attachmentError ? (
+                      <p className="mt-2 text-xs font-medium text-rose-600">{attachmentError}</p>
+                    ) : null}
+                  </div>
+                )}
+
                 <div>
                   <label
                     htmlFor="task-description-input"
                     className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-slate-500"
                   >
                     <AlignLeft className="h-3.5 w-3.5 text-blue-500" aria-hidden />
-                    Description
+                    Description <span className="font-normal normal-case text-slate-400">(optional)</span>
                   </label>
                   <textarea
                     id="task-description-input"
@@ -550,8 +763,7 @@ export default function TasksPage() {
                     onChange={(e) => setDescription(e.target.value)}
                     rows={4}
                     className="min-h-[7rem] w-full resize-y rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm leading-relaxed text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/15"
-                    placeholder="What needs to be done? Add acceptance criteria or links."
-                    required
+                    placeholder="Optional — acceptance criteria, links, or notes."
                   />
                 </div>
               </div>
@@ -559,10 +771,11 @@ export default function TasksPage() {
               <div className="mt-auto border-t border-slate-100 bg-white/90 px-5 py-4 sm:px-6">
                 <button
                   type="submit"
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 py-3.5 text-sm font-bold text-white shadow-lg shadow-blue-500/25 transition hover:from-blue-700 hover:to-indigo-700 active:scale-[0.99]"
+                  disabled={editTaskId ? !editFormReady : !createFormReady || isCreatingTask}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 py-3.5 text-sm font-bold text-white shadow-lg shadow-blue-500/25 transition hover:from-blue-700 hover:to-indigo-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:from-blue-600 disabled:hover:to-indigo-600"
                 >
                   <Check className="h-5 w-5 shrink-0" strokeWidth={2.5} aria-hidden />
-                  {editTaskId ? 'Save changes' : 'Create task'}
+                  {isCreatingTask ? 'Creating…' : editTaskId ? 'Save changes' : 'Create task'}
                 </button>
               </div>
             </form>
@@ -574,11 +787,18 @@ export default function TasksPage() {
       {selectedTask && (
         <div
           className="fixed inset-0 z-50 flex items-end justify-center sm:items-center p-0 sm:p-4 md:p-6 min-h-0 overflow-y-auto overscroll-contain bg-slate-900/60 backdrop-blur-sm"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="task-detail-title"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setSelectedTaskId(null);
+          }}
         >
-          <div className="my-auto flex min-h-0 w-full max-w-2xl max-h-[min(92dvh,56rem)] flex-col overflow-hidden rounded-t-[1.75rem] border border-slate-200/80 bg-white shadow-2xl sm:rounded-[2rem] sm:border-0">
+          <div
+            className="my-auto flex min-h-0 w-full max-w-2xl max-h-[min(92dvh,56rem)] flex-col overflow-hidden rounded-t-[1.75rem] border border-slate-200/80 bg-white shadow-2xl sm:rounded-[2rem] sm:border-0"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="task-detail-title"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-100 bg-slate-50/50 px-4 py-4 sm:px-6 sm:py-5 md:px-8">
               <div className="min-w-0 flex-1">
                 <h2 id="task-detail-title" className="text-lg font-bold text-slate-800 sm:text-xl flex items-center gap-2">
@@ -586,7 +806,8 @@ export default function TasksPage() {
                   Task Details
                 </h2>
                 <p className="mt-1 text-xs text-slate-500">
-                  Assigned to {users.find(u => u.id === selectedTask.assignedTo)?.name || 'Unassigned'}
+                  Assignee: {users.find(u => u.id === selectedTask.assignedTo)?.name || 'Unassigned'} (
+                  {users.find(u => u.id === selectedTask.assignedTo)?.role ?? '—'})
                 </p>
               </div>
               <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
@@ -607,9 +828,17 @@ export default function TasksPage() {
                   <button
                     type="button"
                     onClick={() => {
-                      if (typeof window !== 'undefined' && !window.confirm('Delete this pending task?')) return;
-                      deletePendingTask(selectedTask.id);
-                      setSelectedTaskId(null);
+                      setConfirmAction({
+                        title: 'Delete task',
+                        message: 'Delete this pending task? This cannot be undone.',
+                        confirmLabel: 'Delete',
+                        onConfirm: () => {
+                          deletePendingTask(selectedTask.id);
+                          setSelectedTaskId(null);
+                          setConfirmAction(null);
+                          showScheduleToast('Task deleted.', 'info');
+                        },
+                      });
                     }}
                     className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-600 transition hover:bg-rose-50"
                   >
@@ -636,17 +865,41 @@ export default function TasksPage() {
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
                   <div className="min-w-0 flex-1">
                     <h3 className="text-xl font-bold leading-snug text-slate-900 sm:text-2xl">{selectedTask.title}</h3>
-                    <p className="mt-2 text-sm leading-relaxed text-slate-600 sm:text-base whitespace-pre-wrap break-words">
-                      {selectedTask.description}
-                    </p>
+                    {selectedTask.description ? (
+                      <p className="mt-2 text-sm leading-relaxed text-slate-600 sm:text-base whitespace-pre-wrap break-words">
+                        {selectedTask.description}
+                      </p>
+                    ) : (
+                      <p className="mt-2 text-sm italic text-slate-400">No description</p>
+                    )}
+                    {selectedTask.attachment && (
+                      <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Attachment</p>
+                        <a
+                          href={selectedTask.attachment.dataUrl}
+                          download={selectedTask.attachment.fileName}
+                          className="mt-1 inline-flex items-center gap-2 text-sm font-semibold text-blue-600 underline decoration-blue-200 underline-offset-2 hover:text-blue-800"
+                        >
+                          <Paperclip className="h-4 w-4 shrink-0" aria-hidden />
+                          {selectedTask.attachment.fileName}
+                          <span className="text-xs font-normal text-slate-500">
+                            ({formatFileSize(selectedTask.attachment.fileSize)})
+                          </span>
+                        </a>
+                      </div>
+                    )}
                   </div>
                   <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
                     <span
                       className={`text-[11px] font-bold px-3 py-1 rounded-full border uppercase tracking-wider ${statusBadge(
-                        selectedTask.status
+                        currentUser?.role === 'Admin' || currentUser?.role === 'HR'
+                          ? getManagementTaskDisplayStatus(selectedTask, users, currentUser.role)
+                          : selectedTask.status
                       )}`}
                     >
-                      {selectedTask.status}
+                      {currentUser?.role === 'Admin' || currentUser?.role === 'HR'
+                        ? getManagementTaskDisplayStatus(selectedTask, users, currentUser.role)
+                        : selectedTask.status}
                     </span>
                     {outsideAvailabilityHint && (
                       <span className="text-[10px] font-bold px-3 py-1 rounded-full border bg-rose-50 text-rose-700 border-rose-100 uppercase tracking-widest">
@@ -668,18 +921,61 @@ export default function TasksPage() {
                 </div>
               </div>
 
+              {canForwardToTeamLead(selectedTask) && (
+                <div className="rounded-[1.5rem] border border-indigo-200 bg-indigo-50/80 p-4 sm:p-5 space-y-3">
+                  <h4 className="text-sm font-bold text-indigo-900">Forward to Team Lead (HR only)</h4>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                    <div className="min-w-0 flex-1">
+                      <label htmlFor="forward-tl" className="mb-1.5 block text-[11px] font-bold uppercase tracking-widest text-indigo-700">
+                        Team Lead
+                      </label>
+                      <select
+                        id="forward-tl"
+                        value={forwardTlId}
+                        onChange={(e) => setForwardTlId(e.target.value)}
+                        className="w-full rounded-xl border border-indigo-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-900 shadow-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                      >
+                        <option value="">Select Team Lead</option>
+                        {teamLeaderOptions.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.name} — {u.team ?? 'Team'}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!forwardTlId}
+                      onClick={() => {
+                        if (!forwardTlId) return;
+                        forwardTaskToTeamLeader(selectedTask.id, forwardTlId);
+                        setForwardTlId('');
+                        showScheduleToast(
+                          'Forwarded to Team Lead. They can start work from their Schedule.',
+                          'success'
+                        );
+                      }}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-bold text-white shadow-md transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <ArrowRightCircle className="h-4 w-4" />
+                      Forward
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {showWorkflowPanel && (
               <div className="bg-slate-50 border border-slate-100 rounded-[1.5rem] p-4 sm:p-5 space-y-4">
                 <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                   <h4 className="text-sm font-bold text-slate-800">Workflow Actions</h4>
                   <div className="flex flex-wrap gap-2">
-                    {currentUser?.role === 'Employee' &&
+                    {(currentUser?.role === 'Employee' || currentUser?.role === 'Team Leader') &&
                       selectedTask.assignedTo === currentUser.id &&
                       selectedTask.status === 'Pending' && (
                         <button
                           onClick={() => {
                             startTaskWork(selectedTask.id);
-                            alert('Task started. Status updated to In Progress.');
+                            showScheduleToast('Task started. Status updated to In Progress.', 'success');
                           }}
                           className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all active:scale-95 flex items-center gap-2"
                         >
@@ -688,16 +984,17 @@ export default function TasksPage() {
                         </button>
                       )}
 
-                    {currentUser?.role === 'Employee' &&
+                    {(currentUser?.role === 'Employee' || currentUser?.role === 'Team Leader') &&
                       selectedTask.assignedTo === currentUser.id &&
                       (selectedTask.status === 'In Progress' || selectedTask.status === 'Review') && (
                         <button
                           onClick={() => {
                             submitTask(selectedTask.id);
-                            alert(
+                            showScheduleToast(
                               selectedTask.status === 'Review'
                                 ? 'Resubmitted. Waiting for approval.'
-                                : 'Task submitted. Waiting for approval.'
+                                : 'Task submitted. Waiting for approval.',
+                              'success'
                             );
                           }}
                           className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all active:scale-95 flex items-center gap-2"
@@ -711,7 +1008,7 @@ export default function TasksPage() {
                       <button
                         onClick={() => {
                           moveTaskToReview(selectedTask.id);
-                          alert('Task moved to Review.');
+                          showScheduleToast('Task moved to Review.', 'success');
                         }}
                         className="bg-violet-600 hover:bg-violet-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all active:scale-95 flex items-center gap-2"
                       >
@@ -725,7 +1022,7 @@ export default function TasksPage() {
                         type="button"
                         onClick={() => {
                           approveTask(selectedTask.id);
-                          alert('Approved. Task marked as Approved.');
+                          showScheduleToast('Approved. Task marked as Approved.', 'success');
                           setSelectedTaskId(null);
                         }}
                         className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all active:scale-95 flex items-center gap-2"
@@ -745,7 +1042,12 @@ export default function TasksPage() {
                 ) : (
                   <div className="space-y-3">
                     {historyForSelected.map((entry: TaskHistoryEntry) => {
-                      const label = entry.action === 'Reject' ? 'Rejected' : entry.toStatus;
+                      const label =
+                        entry.action === 'Reject'
+                          ? 'Rejected'
+                          : entry.action === 'Forward to Team Leader'
+                            ? 'Pending'
+                            : entry.toStatus;
                       const badgeTone = statusBadge(label);
                       const actorName = users.find(u => u.id === entry.actorId)?.name || 'Unknown';
                       return (
@@ -781,6 +1083,91 @@ export default function TasksPage() {
               </div>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {confirmAction && (
+        <div
+          className="fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/70 p-4 backdrop-blur-sm sm:items-center"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setConfirmAction(null);
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="schedule-confirm-title"
+            aria-describedby="schedule-confirm-desc"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="schedule-confirm-title" className="text-lg font-bold text-slate-900">
+              {confirmAction.title}
+            </h2>
+            <p id="schedule-confirm-desc" className="mt-2 text-sm text-slate-600">
+              {confirmAction.message}
+            </p>
+            <div className="mt-6 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmAction(null)}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => confirmAction.onConfirm()}
+                className="rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-rose-700"
+              >
+                {confirmAction.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {scheduleToast && (
+        <div
+          className="pointer-events-none fixed inset-x-0 top-5 z-[120] flex justify-center px-4 sm:top-6"
+          role="status"
+        >
+          <div
+            className={`pointer-events-auto inline-flex max-w-[min(100%,18rem)] animate-in fade-in slide-in-from-top-2 duration-200 items-center gap-2 rounded-full border bg-white py-2 pl-2 pr-3 shadow-[0_6px_24px_rgb(15,23,42,0.1)] sm:max-w-[min(100%,22rem)] sm:gap-2.5 sm:py-2.5 sm:pl-2.5 sm:pr-4 ${
+              scheduleToast.tone === 'error'
+                ? 'border-rose-100'
+                : scheduleToast.tone === 'info'
+                  ? 'border-slate-100'
+                  : 'border-slate-100'
+            }`}
+          >
+            {scheduleToast.tone === 'error' ? (
+              <span
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-rose-500 text-white shadow-sm sm:h-8 sm:w-8"
+                aria-hidden
+              >
+                <AlertCircle className="h-4 w-4 sm:h-[1.125rem] sm:w-[1.125rem]" strokeWidth={2.25} />
+              </span>
+            ) : scheduleToast.tone === 'info' ? (
+              <span
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-700 text-white shadow-sm sm:h-8 sm:w-8"
+                aria-hidden
+              >
+                <Info className="h-4 w-4 sm:h-[1.125rem] sm:w-[1.125rem]" strokeWidth={2.25} />
+              </span>
+            ) : (
+              <span
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white shadow-sm sm:h-8 sm:w-8"
+                aria-hidden
+              >
+                <Check className="h-3.5 w-3.5 sm:h-4 sm:w-4" strokeWidth={3} />
+              </span>
+            )}
+            <p className="min-w-0 max-w-[14rem] text-xs font-medium leading-snug text-slate-900 sm:max-w-none sm:text-sm">
+              {scheduleToast.message}
+            </p>
           </div>
         </div>
       )}

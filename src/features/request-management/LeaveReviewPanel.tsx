@@ -63,7 +63,7 @@ export function LeaveReviewPanel({
                 <td className="px-4 py-5 sm:px-6">
                   <span
                     className={`mb-1 block text-[10px] font-bold uppercase tracking-wider ${
-                      leave.type === 'Sick'
+                      leave.type === 'Leave'
                         ? 'text-rose-500'
                         : leave.type === 'Casual'
                           ? 'text-amber-500'

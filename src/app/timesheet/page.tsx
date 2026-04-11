@@ -61,7 +61,7 @@ function HRTimesheetView() {
       <section className="space-y-3">
         <h2 className="text-lg font-bold text-slate-800">Company attendance (clock in / out)</h2>
         <p className="text-sm text-slate-600">
-          Sab roles: filter mein <span className="font-semibold">All providers</span> rakho ya sirf Employees, HR, ya Team Leader.
+          Filter by provider or role (Employees, HR, Team Leader).
         </p>
         <GlobalAttendanceLog />
       </section>
@@ -69,7 +69,7 @@ function HRTimesheetView() {
       <section className="space-y-3">
         <h2 className="text-lg font-bold text-slate-800">Manual timesheet (approved)</h2>
         <p className="text-sm text-slate-600">
-          Wahi role filters — row par click karein to poora hafta aur daily entries ka modal khulta hai.
+          Click a row to open the week and daily detail modal.
         </p>
         <ManualTimesheetLog />
       </section>
@@ -95,19 +95,19 @@ function AdminTimesheetView() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight text-slate-900">Company Time Records</h1>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-600">
-          Clock attendance neeche filter karke dekho (site, role: Employees / HR / Team Leader). Approved{' '}
-          <strong>manual time</strong> alag section mein hai — row par click se detail modal. Pending manual requests{' '}
+          Filter clock attendance by site and role. Approved manual time appears below; click a row for details. Approve or
+          reject pending manual requests in{' '}
           <Link href="/request-management" className="font-semibold text-blue-600 hover:underline">
             Request Management
-          </Link>{' '}
-          se approve / reject karein.
+          </Link>
+          .
         </p>
       </div>
 
       <section className="space-y-3">
         <h2 className="text-lg font-bold text-slate-800">Company attendance (clock in / out)</h2>
         <p className="text-sm text-slate-600">
-          Company-wide log — Excel / PDF export toolbar se.
+          Company-wide log with Excel / PDF export.
         </p>
         <GlobalAttendanceLog />
       </section>
@@ -115,7 +115,7 @@ function AdminTimesheetView() {
       <section className="space-y-3">
         <h2 className="text-lg font-bold text-slate-800">Manual timesheet (approved)</h2>
         <p className="text-sm text-slate-600">
-          HR jaisa hi view: role filters, row click par week detail modal.
+          Same filters as HR; click a row for week details.
         </p>
         <ManualTimesheetLog />
       </section>

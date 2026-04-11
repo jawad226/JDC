@@ -8,10 +8,10 @@ import type { RequestStatusFilter } from './types';
 
 export function useMyRequestsController() {
   const searchParams = useSearchParams();
-  const { currentUser, leaves, applyLeave, manualTimeRequests, applyManualTimeRequest } = useStore(
+  const { currentUser, Leave, applyLeave, manualTimeRequests, applyManualTimeRequest } = useStore(
     useShallow((s) => ({
       currentUser: s.currentUser,
-      leaves: s.leaves,
+      Leave: s.Leave,
       applyLeave: s.applyLeave,
       manualTimeRequests: s.manualTimeRequests,
       applyManualTimeRequest: s.applyManualTimeRequest,
@@ -19,12 +19,12 @@ export function useMyRequestsController() {
   );
 
   const [activeTab, setActiveTab] = useState<RequestsHubTab>('leave');
-  const [leaveStatusFilter, setLeaveStatusFilter] = useState<RequestStatusFilter>('Pending');
+  const [LeavetatusFilter, setLeavetatusFilter] = useState<RequestStatusFilter>('Pending');
   const [manualStatusFilter, setManualStatusFilter] = useState<RequestStatusFilter>('Pending');
   const [leaveFormOpen, setLeaveFormOpen] = useState(false);
   const [manualFormOpen, setManualFormOpen] = useState(false);
 
-  const [leaveType, setLeaveType] = useState<LeaveType>('Sick');
+  const [leaveType, setLeaveType] = useState<LeaveType>('Leave');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [reason, setReason] = useState('');
@@ -53,12 +53,12 @@ export function useMyRequestsController() {
     setManualFormOpen(false);
   };
 
-  const myLeaves = useMemo(
+  const myLeave = useMemo(
     () =>
-      leaves
+      Leave
         .filter((l) => l.userId === currentUser?.id)
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
-    [leaves, currentUser?.id]
+    [Leave, currentUser?.id]
   );
 
   const myManualTimeRequests = useMemo(
@@ -69,9 +69,9 @@ export function useMyRequestsController() {
     [manualTimeRequests, currentUser?.id]
   );
 
-  const filteredLeaves = useMemo(
-    () => myLeaves.filter((l) => leaveStatusFilter === 'All' || l.status === leaveStatusFilter),
-    [myLeaves, leaveStatusFilter]
+  const filteredLeave = useMemo(
+    () => myLeave.filter((l) => LeavetatusFilter === 'All' || l.status === LeavetatusFilter),
+    [myLeave, LeavetatusFilter]
   );
 
   const filteredManual = useMemo(
@@ -131,23 +131,23 @@ export function useMyRequestsController() {
 
   const onStatusFilterChange = (v: string) => {
     const next = v as RequestStatusFilter;
-    if (activeTab === 'leave') setLeaveStatusFilter(next);
+    if (activeTab === 'leave') setLeavetatusFilter(next);
     else setManualStatusFilter(next);
   };
 
   return {
     activeTab,
     handleTabChange,
-    leaveStatusFilter,
+    LeavetatusFilter,
     manualStatusFilter,
     onStatusFilterChange,
     leaveFormOpen,
     setLeaveFormOpen,
     manualFormOpen,
     setManualFormOpen,
-    myLeaves,
+    myLeave,
     myManualTimeRequests,
-    filteredLeaves,
+    filteredLeave,
     filteredManual,
     leaveForm: {
       leaveType,

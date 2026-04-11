@@ -23,7 +23,7 @@ type LeaveForm = {
 };
 
 type LeaveRequestsPanelProps = {
-  leaveStatusFilter: RequestStatusFilter;
+  LeavetatusFilter: RequestStatusFilter;
   rows: LeaveRequest[];
   totalCount: number;
   formOpen: boolean;
@@ -33,7 +33,7 @@ type LeaveRequestsPanelProps = {
 };
 
 export function LeaveRequestsPanel({
-  leaveStatusFilter,
+  LeavetatusFilter,
   rows,
   totalCount,
   formOpen,
@@ -82,7 +82,7 @@ export function LeaveRequestsPanel({
               {rows.length === 0 ? (
                 <tr>
                   <td colSpan={3} className="px-6 py-16 text-center text-sm font-medium text-slate-500">
-                    {leaveEmptyMessage(leaveStatusFilter, totalCount)}
+                    {leaveEmptyMessage(LeavetatusFilter, totalCount)}
                   </td>
                 </tr>
               ) : (
@@ -116,7 +116,7 @@ export function LeaveRequestsPanel({
               onChange={(e) => setLeaveType(e.target.value as LeaveType)}
               className={FIELD_CLASS}
             >
-              <option value="Sick">Sick</option>
+              <option value="Leave">Leave</option>
               <option value="Casual">Casual</option>
               <option value="Paid">Paid (Annual)</option>
             </select>

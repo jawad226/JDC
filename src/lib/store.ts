@@ -1,5 +1,22 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { ChatAttachment, ChatMessage, ChatThread } from '@/lib/messaging';
+import {
+  chatThreadTitle,
+  canDm,
+  dmKeyFor,
+  canSendInThread,
+  isThreadVisibleToViewer,
+  canAddToHrGroup,
+  canAddToTlGroup,
+  canAddToOfficialGroup,
+  createDefaultChatThreads,
+  resolveMessageRecipients,
+  migrateChatThreadsForReadReceipts,
+} from '@/lib/messaging';
+import { emitChatSocketEvent } from '@/lib/chat-socket';
+
+const initialChatThreads = createDefaultChatThreads();
 
 /** Use with `useStore(useShallow(...))` when selecting multiple fields so unrelated store updates don’t re-render the component. */
 export { useShallow } from 'zustand/react/shallow';
@@ -16,7 +33,7 @@ export interface User {
   email: string;
   avatar?: string;
   team?: string;
-  status?: 'Available' | 'Unavailable' | 'Sick';
+  status?: 'Available' | 'Unavailable' | 'Leave';
   phone?: string;
   department?: Department;
   /** National ID (demo). */
@@ -66,6 +83,7 @@ export type TaskWorkflowStatus =
 export type TaskHistoryAction =
   | 'Created'
   | 'Updated'
+  | 'Forward to Team Leader'
   | 'Start Work'
   | 'Submit'
   | 'Send to Review'
@@ -90,6 +108,12 @@ export interface TaskComment {
   createdAt: string;
 }
 
+export interface TaskAttachment {
+  fileName: string;
+  fileSize: number;
+  dataUrl: string;
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -101,10 +125,12 @@ export interface Task {
   deadline: string;
   comments: TaskComment[];
   history?: TaskHistoryEntry[];
+  /** Required on create (max 5MB); optional on older / seeded tasks */
+  attachment?: TaskAttachment;
 }
 
-export type LeaveType = 'Sick' | 'Casual' | 'Paid';
-export type LeaveStatus = 'Pending' | 'Approved' | 'Rejected';
+export type LeaveType = 'Leave' | 'Casual' | 'Paid';
+export type Leavetatus = 'Pending' | 'Approved' | 'Rejected';
 
 export interface LeaveRequest {
   id: string;
@@ -113,7 +139,7 @@ export interface LeaveRequest {
   startDate: string;
   endDate: string;
   reason: string;
-  status: LeaveStatus;
+  status: Leavetatus;
   createdAt: string;
 }
 
@@ -147,12 +173,27 @@ export interface UserAvailability {
   days: DayAvailability[];
 }
 
+/** True when the task was created by a Team Leader (scoped to that TL; hidden from Admin/HR lists and their review). */
+export function isTeamLeaderCreatedTask(task: Task, users: User[]): boolean {
+  const creator = users.find((u) => u.id === task.assignedBy);
+  return creator?.role === 'Team Leader';
+}
+
+/** Admin + HR: Pending = HR hold or TL not started; Working = TL started (In Progress). Others see raw `task.status`. */
+export function getManagementTaskDisplayStatus(task: Task, users: User[], viewerRole: Role): string {
+  if (viewerRole !== 'Admin' && viewerRole !== 'HR') return task.status;
+  if (task.status === 'Submitted' || task.status === 'Review' || task.status === 'Approved') return task.status;
+  if (task.status === 'In Progress') return 'Working';
+  if (task.status === 'Pending') return 'Pending';
+  return task.status;
+}
+
 interface AppState {
   currentUser: User | null;
   users: User[];
   timesheets: TimesheetEntry[];
   tasks: Task[];
-  leaves: LeaveRequest[];
+  Leave: LeaveRequest[];
   manualTimeRequests: ManualTimeRequest[];
   setCurrentUser: (user: User | null) => void;
   clockIn: () => void;
@@ -173,11 +214,13 @@ interface AppState {
   // Tasks
   createTask: (input: {
     title: string;
-    description: string;
+    description?: string;
     assignedTo: string;
-    priority: TaskPriority;
     deadline: string;
+    attachment: TaskAttachment;
   }) => void;
+  /** HR only: assign project from Admin to a Team Leader (senior). */
+  forwardTaskToTeamLeader: (taskId: string, teamLeaderId: string) => void;
   startTaskWork: (taskId: string) => void;
   submitTask: (taskId: string) => void;
   /** HR/TL: move a submitted task into the Review step before final approval. */
@@ -197,9 +240,9 @@ interface AppState {
     }
   ) => void;
   addTaskComment: (taskId: string, comment: string) => void;
-  // Leaves
+  // Leave
   applyLeave: (leave: Omit<LeaveRequest, 'id' | 'status' | 'createdAt'>) => void;
-  updateLeaveStatus: (leaveId: string, status: LeaveStatus) => void;
+  updateLeavetatus: (leaveId: string, status: Leavetatus) => void;
 
   // Manual Time Requests
   applyManualTimeRequest: (input: Omit<
@@ -259,6 +302,41 @@ interface AppState {
     | { ok: true }
     | { ok: false; error: string };
   passwordResetTokens: PasswordResetToken[];
+  /** In-app messaging (DMs + groups); rules in `@/lib/messaging`. */
+  chatThreads: ChatThread[];
+  sendChatMessage: (
+    chatId: string,
+    input: {
+      body: string;
+      attachment?: ChatAttachment | null;
+      replyToId?: string | null;
+    }
+  ) => { ok: true } | { ok: false; error?: string };
+  editChatMessage: (
+    chatId: string,
+    messageId: string,
+    newBody: string
+  ) => { ok: true } | { ok: false; error?: string };
+  deleteChatMessage: (chatId: string, messageId: string) => { ok: true } | { ok: false; error?: string };
+  forwardChatMessage: (
+    targetChatId: string,
+    source: { sourceChatId: string; messageId: string }
+  ) => { ok: true } | { ok: false; error?: string };
+  openOrCreateDm: (otherUserId: string) => { ok: true; chatId: string } | { ok: false; error?: string };
+  createGroupChat: (input: {
+    name: string;
+    memberIds: string[];
+    scope: 'official' | 'hr_group' | 'tl_group';
+  }) => { ok: true; chatId: string } | { ok: false; error?: string };
+  addMembersToGroup: (chatId: string, userIds: string[]) => { ok: true } | { ok: false; error?: string };
+  /** Mark all messages in a chat as read for the current user (read receipts). */
+  markChatRead: (chatId: string) => void;
+  /** Simulate another user sending a message (frontend “socket” demo). */
+  receiveIncomingChatMessage: (
+    chatId: string,
+    fromUserId: string,
+    input: { body: string; attachment?: ChatAttachment | null }
+  ) => { ok: true } | { ok: false; error?: string };
 }
 
 const mockUsers: User[] = [
@@ -356,9 +434,9 @@ export const useStore = create<AppState>()(
         {
           id: 't1',
           title: 'Design Login Page',
-          description: 'Create the UI for the main login page',
-          assignedTo: '1',
-          assignedBy: '3',
+          description: 'Create the UI for the main login page — Admin assigned to HR; HR will forward to a Team Lead.',
+          assignedTo: '3',
+          assignedBy: '2',
           status: 'Pending',
           priority: 'High',
           deadline: new Date(Date.now() + 86400000 * 2).toISOString(),
@@ -367,8 +445,8 @@ export const useStore = create<AppState>()(
             {
               id: Math.random().toString(36).substring(7),
               at: new Date().toISOString(),
-              actorId: '3',
-              actorRole: 'HR',
+              actorId: '2',
+              actorRole: 'Admin',
               fromStatus: null,
               toStatus: 'Pending',
               action: 'Created',
@@ -379,8 +457,8 @@ export const useStore = create<AppState>()(
           id: 't2',
           title: 'Review System Specs',
           description: 'Technical review of the new digital care architecture',
-          assignedTo: '1',
-          assignedBy: '3',
+          assignedTo: '4',
+          assignedBy: '2',
           status: 'Review',
           priority: 'Medium',
           deadline: new Date(Date.now() + 86400000 * 4).toISOString(),
@@ -389,17 +467,26 @@ export const useStore = create<AppState>()(
             {
               id: Math.random().toString(36).substring(7),
               at: new Date().toISOString(),
-              actorId: '3',
-              actorRole: 'HR',
+              actorId: '2',
+              actorRole: 'Admin',
               fromStatus: null,
               toStatus: 'Pending',
               action: 'Created',
             },
             {
               id: Math.random().toString(36).substring(7),
+              at: new Date(Date.now() + 1000 * 60 * 2).toISOString(),
+              actorId: '3',
+              actorRole: 'HR',
+              fromStatus: 'Pending',
+              toStatus: 'Pending',
+              action: 'Forward to Team Leader',
+            },
+            {
+              id: Math.random().toString(36).substring(7),
               at: new Date(Date.now() + 1000 * 60 * 5).toISOString(),
-              actorId: '1',
-              actorRole: 'Employee',
+              actorId: '4',
+              actorRole: 'Team Leader',
               fromStatus: 'Pending',
               toStatus: 'In Progress',
               action: 'Start Work',
@@ -407,8 +494,8 @@ export const useStore = create<AppState>()(
             {
               id: Math.random().toString(36).substring(7),
               at: new Date(Date.now() + 1000 * 60 * 20).toISOString(),
-              actorId: '1',
-              actorRole: 'Employee',
+              actorId: '4',
+              actorRole: 'Team Leader',
               fromStatus: 'In Progress',
               toStatus: 'Submitted',
               action: 'Submit',
@@ -474,8 +561,9 @@ export const useStore = create<AppState>()(
           ],
         }
       ],
-      leaves: [],
+      Leave: [],
       manualTimeRequests: [],
+      chatThreads: initialChatThreads,
       passwordResetTokens: [] as PasswordResetToken[],
       availability: [],
       setCurrentUser: (user) => set({ currentUser: user }),
@@ -806,28 +894,40 @@ export const useStore = create<AppState>()(
       createTask: (input) => {
         const { currentUser, users } = get();
         if (!currentUser) return;
-        const { title, description, assignedTo, priority, deadline } = input;
+        const { title, description, assignedTo, deadline, attachment } = input;
 
-        const allowedCreator =
-          currentUser.role === 'Admin' || currentUser.role === 'HR' || currentUser.role === 'Team Leader';
-        if (!allowedCreator) return;
+        const maxBytes = 5 * 1024 * 1024;
+        if (!attachment?.dataUrl || attachment.fileSize > maxBytes || attachment.fileSize <= 0) return;
 
         const assignedUser = users.find(u => u.id === assignedTo);
         if (!assignedUser || assignedUser.role === 'Pending User') return;
 
-        // Team Leader can only assign within their team
-        if (currentUser.role === 'Team Leader' && assignedUser.team !== currentUser.team) return;
+        // Admin → HR only. Team Leader → own team’s Employees only.
+        if (currentUser.role === 'Admin') {
+          if (assignedUser.role !== 'HR') return;
+        } else if (currentUser.role === 'Team Leader') {
+          if (assignedUser.role !== 'Employee') return;
+          if (!assignedUser.team || assignedUser.team !== currentUser.team) return;
+        } else {
+          return;
+        }
 
         const nowIso = new Date().toISOString();
+        const desc = (description ?? '').trim();
         const newTask: Task = {
           id: Math.random().toString(36).substring(7),
-          title,
-          description,
+          title: title.trim(),
+          description: desc,
           assignedTo,
           assignedBy: currentUser.id,
           status: 'Pending',
-          priority,
+          priority: 'Medium',
           deadline,
+          attachment: {
+            fileName: attachment.fileName,
+            fileSize: attachment.fileSize,
+            dataUrl: attachment.dataUrl,
+          },
           comments: [],
           history: [
             {
@@ -845,21 +945,58 @@ export const useStore = create<AppState>()(
         set((state) => ({ tasks: [...state.tasks, newTask] }));
       },
 
+      forwardTaskToTeamLeader: (taskId, teamLeaderId) => {
+        const { currentUser, tasks, users } = get();
+        if (!currentUser || currentUser.role !== 'HR') return;
+
+        const task = tasks.find(t => t.id === taskId);
+        if (!task || task.status !== 'Pending') return;
+        if (task.assignedTo !== currentUser.id) return;
+
+        const assigneeNow = users.find(u => u.id === task.assignedTo);
+        if (!assigneeNow || assigneeNow.role !== 'HR') return;
+
+        const tl = users.find(u => u.id === teamLeaderId);
+        if (!tl || tl.role !== 'Team Leader') return;
+
+        const nowIso = new Date().toISOString();
+        const entry: TaskHistoryEntry = {
+          id: Math.random().toString(36).substring(7),
+          at: nowIso,
+          actorId: currentUser.id,
+          actorRole: 'HR',
+          fromStatus: 'Pending',
+          toStatus: 'Pending',
+          action: 'Forward to Team Leader',
+        };
+
+        set((state) => ({
+          tasks: state.tasks.map(t =>
+            t.id === taskId
+              ? { ...t, assignedTo: teamLeaderId, history: [...(t.history || []), entry] }
+              : t
+          ),
+        }));
+      },
+
       deletePendingTask: (taskId) => {
         const { currentUser, tasks, users } = get();
         if (!currentUser) return;
-        const allowed =
-          currentUser.role === 'Admin' ||
-          currentUser.role === 'HR' ||
-          currentUser.role === 'Team Leader';
-        if (!allowed) return;
 
         const task = tasks.find(t => t.id === taskId);
         if (!task || task.status !== 'Pending') return;
 
-        if (currentUser.role === 'Team Leader') {
-          const assignedUser = users.find(u => u.id === task.assignedTo);
-          if (!assignedUser || assignedUser.team !== currentUser.team) return;
+        const assignedUser = users.find(u => u.id === task.assignedTo);
+
+        if (currentUser.role === 'Admin') {
+          if (isTeamLeaderCreatedTask(task, users)) return;
+        } else if (currentUser.role === 'HR') {
+          if (!assignedUser || assignedUser.role !== 'HR' || task.assignedTo !== currentUser.id) return;
+        } else if (currentUser.role === 'Team Leader') {
+          if (task.assignedBy !== currentUser.id) return;
+          if (!assignedUser || assignedUser.role !== 'Employee' || assignedUser.team !== currentUser.team) return;
+        } else {
+          return;
         }
 
         set((state) => ({ tasks: state.tasks.filter(t => t.id !== taskId) }));
@@ -868,28 +1005,31 @@ export const useStore = create<AppState>()(
       updatePendingTask: (taskId, input) => {
         const { currentUser, tasks, users } = get();
         if (!currentUser) return;
-        const allowed =
-          currentUser.role === 'Admin' ||
-          currentUser.role === 'HR' ||
-          currentUser.role === 'Team Leader';
-        if (!allowed) return;
 
         const task = tasks.find(t => t.id === taskId);
         if (!task || task.status !== 'Pending') return;
 
-        if (currentUser.role === 'Team Leader') {
-          const currentAssignee = users.find(u => u.id === task.assignedTo);
-          if (!currentAssignee || currentAssignee.team !== currentUser.team) return;
-        }
-
         const { title, description, assignedTo, priority, deadline } = input;
         const assignedUser = users.find(u => u.id === assignedTo);
         if (!assignedUser || assignedUser.role === 'Pending User') return;
-        if (currentUser.role === 'Team Leader' && assignedUser.team !== currentUser.team) return;
+
+        if (currentUser.role === 'HR') {
+          const cur = users.find(u => u.id === task.assignedTo);
+          if (!cur || cur.role !== 'HR' || task.assignedTo !== currentUser.id) return;
+          if (assignedUser.role !== 'HR' || assignedTo !== currentUser.id) return;
+        } else if (currentUser.role === 'Admin') {
+          if (isTeamLeaderCreatedTask(task, users)) return;
+          if (assignedUser.role !== 'HR' && assignedUser.role !== 'Team Leader') return;
+        } else if (currentUser.role === 'Team Leader') {
+          if (task.assignedBy !== currentUser.id) return;
+          if (assignedUser.role !== 'Employee' || assignedUser.team !== currentUser.team) return;
+        } else {
+          return;
+        }
 
         const titleTrim = title.trim();
         const descriptionTrim = description.trim();
-        if (!titleTrim || !descriptionTrim || !deadline) return;
+        if (!titleTrim || !deadline) return;
 
         const nowIso = new Date().toISOString();
         const entry: TaskHistoryEntry = {
@@ -921,7 +1061,8 @@ export const useStore = create<AppState>()(
 
       startTaskWork: (taskId) => {
         const { currentUser, tasks } = get();
-        if (!currentUser || currentUser.role !== 'Employee') return;
+        if (!currentUser) return;
+        if (currentUser.role !== 'Employee' && currentUser.role !== 'Team Leader') return;
 
         const task = tasks.find(t => t.id === taskId);
         if (!task) return;
@@ -948,7 +1089,8 @@ export const useStore = create<AppState>()(
 
       submitTask: (taskId) => {
         const { currentUser, tasks } = get();
-        if (!currentUser || currentUser.role !== 'Employee') return;
+        if (!currentUser) return;
+        if (currentUser.role !== 'Employee' && currentUser.role !== 'Team Leader') return;
 
         const task = tasks.find(t => t.id === taskId);
         if (!task) return;
@@ -977,15 +1119,24 @@ export const useStore = create<AppState>()(
 
       moveTaskToReview: (taskId) => {
         const { currentUser, tasks, users } = get();
-        if (!currentUser || (currentUser.role !== 'HR' && currentUser.role !== 'Team Leader')) return;
-
         const task = tasks.find(t => t.id === taskId);
-        if (!task) return;
-        if (task.status !== 'Submitted') return;
+        if (!task || task.status !== 'Submitted') return;
 
-        if (currentUser.role === 'Team Leader') {
-          const assignedUser = users.find(u => u.id === task.assignedTo);
-          if (!assignedUser || assignedUser.team !== currentUser.team) return;
+        const tlCreated = isTeamLeaderCreatedTask(task, users);
+        if (tlCreated) {
+          if (!currentUser || currentUser.role !== 'Team Leader' || currentUser.id !== task.assignedBy) return;
+        } else {
+          if (
+            !currentUser ||
+            (currentUser.role !== 'Admin' &&
+              currentUser.role !== 'HR' &&
+              currentUser.role !== 'Team Leader')
+          )
+            return;
+          if (currentUser.role === 'Team Leader') {
+            const assignedUser = users.find(u => u.id === task.assignedTo);
+            if (!assignedUser || assignedUser.team !== currentUser.team) return;
+          }
         }
 
         set((state) => ({
@@ -1008,16 +1159,25 @@ export const useStore = create<AppState>()(
 
       approveTask: (taskId) => {
         const { currentUser, tasks, users } = get();
-        if (!currentUser || (currentUser.role !== 'HR' && currentUser.role !== 'Team Leader')) return;
-
         const task = tasks.find(t => t.id === taskId);
         if (!task) return;
         if (task.status !== 'Submitted' && task.status !== 'Review') return;
 
-        // Team Leader can only approve tasks from their team
-        if (currentUser.role === 'Team Leader') {
-          const assignedUser = users.find(u => u.id === task.assignedTo);
-          if (!assignedUser || assignedUser.team !== currentUser.team) return;
+        const tlCreated = isTeamLeaderCreatedTask(task, users);
+        if (tlCreated) {
+          if (!currentUser || currentUser.role !== 'Team Leader' || currentUser.id !== task.assignedBy) return;
+        } else {
+          if (
+            !currentUser ||
+            (currentUser.role !== 'Admin' &&
+              currentUser.role !== 'HR' &&
+              currentUser.role !== 'Team Leader')
+          )
+            return;
+          if (currentUser.role === 'Team Leader') {
+            const assignedUser = users.find(u => u.id === task.assignedTo);
+            if (!assignedUser || assignedUser.team !== currentUser.team) return;
+          }
         }
 
         const fromStatus = task.status;
@@ -1069,8 +1229,8 @@ export const useStore = create<AppState>()(
         if (currentUser.role === 'Pending User') return;
 
         set((state) => ({
-          leaves: [
-            ...state.leaves,
+          Leave: [
+            ...state.Leave,
             {
               ...leaveData,
               id: Math.random().toString(36).substring(7),
@@ -1081,13 +1241,13 @@ export const useStore = create<AppState>()(
         }));
       },
 
-      updateLeaveStatus: (leaveId, status) => {
+      updateLeavetatus: (leaveId, status) => {
         const { currentUser } = get();
         const canReview = currentUser?.role === 'Admin' || currentUser?.role === 'HR';
         if (!canReview) return;
 
         set((state) => ({
-          leaves: state.leaves.map(l => (l.id === leaveId ? { ...l, status } : l)),
+          Leave: state.Leave.map(l => (l.id === leaveId ? { ...l, status } : l)),
         }));
       },
 
@@ -1140,7 +1300,7 @@ export const useStore = create<AppState>()(
         if (!trimmedTeam) return { ok: false, error: 'Enter a team name.' };
 
         const trimmedSite = siteName.trim();
-        if (!trimmedSite) return { ok: false, error: 'Select a department.' };
+        if (!trimmedSite) return { ok: false, error: 'Enter a department name.' };
 
         const uniqueEmployees = [...new Set(employeeIds)];
         if (uniqueEmployees.length < 2) {
@@ -1314,12 +1474,13 @@ export const useStore = create<AppState>()(
           const next = state.users.map((u) =>
             u.id === userId ? { ...u, team: trimmed, workSite: site } : u
           );
+          const teams = state.teams.includes(trimmed) ? state.teams : [...state.teams, trimmed];
           let currentUser = state.currentUser;
           if (currentUser) {
             const refreshed = next.find((x) => x.id === currentUser!.id);
             if (refreshed) currentUser = refreshed;
           }
-          return { users: next, currentUser };
+          return { users: next, teams, currentUser };
         });
         return { ok: true };
       },
@@ -1358,12 +1519,13 @@ export const useStore = create<AppState>()(
           const next = state.users.map((u) =>
             unique.includes(u.id) ? { ...u, team: trimmed, role: 'Employee' as Role, workSite: site } : u
           );
+          const teams = state.teams.includes(trimmed) ? state.teams : [...state.teams, trimmed];
           let currentUser = state.currentUser;
           if (currentUser) {
             const refreshed = next.find((x) => x.id === currentUser!.id);
             if (refreshed) currentUser = refreshed;
           }
-          return { users: next, currentUser };
+          return { users: next, teams, currentUser };
         });
         return { ok: true };
       },
@@ -1373,6 +1535,371 @@ export const useStore = create<AppState>()(
           u.id === userId ? { ...u, role, team, status: 'Available' as const } : u
         )
       })),
+
+      sendChatMessage: (chatId, input) => {
+        const { currentUser, users, chatThreads } = get();
+        if (!currentUser) return { ok: false, error: 'Not signed in' };
+        const text = input.body.trim();
+        const attachment = input.attachment ?? null;
+        const replyToId = input.replyToId ?? undefined;
+        if (!text && !attachment) return { ok: false, error: 'Message is empty' };
+        const thread = chatThreads.find((t) => t.id === chatId);
+        if (!thread) return { ok: false, error: 'Chat not found' };
+        if (!isThreadVisibleToViewer(thread, currentUser, users)) {
+          return { ok: false, error: 'No access' };
+        }
+        if (!canSendInThread(thread, currentUser, users)) {
+          return { ok: false, error: 'Read-only for your role' };
+        }
+        if (replyToId && !thread.messages.some((m) => m.id === replyToId)) {
+          return { ok: false, error: 'Reply target not found' };
+        }
+        const rc = resolveMessageRecipients(thread, currentUser.id);
+        const msg: ChatMessage = {
+          id: `m-${Math.random().toString(36).slice(2, 12)}`,
+          chatId,
+          senderId: currentUser.id,
+          authorId: currentUser.id,
+          body: text,
+          createdAt: new Date().toISOString(),
+          readByUserIds: [],
+          receiverId: rc.receiverId,
+          groupId: rc.groupId,
+          ...(attachment ? { attachment } : {}),
+          ...(replyToId ? { replyToId } : {}),
+        };
+        set({
+          chatThreads: chatThreads.map((t) =>
+            t.id === chatId ? { ...t, messages: [...t.messages, msg] } : t
+          ),
+        });
+        emitChatSocketEvent({ type: 'message:new', chatId, message: msg, source: 'send' });
+        return { ok: true };
+      },
+
+      editChatMessage: (chatId, messageId, newBody) => {
+        const { currentUser, chatThreads } = get();
+        if (!currentUser) return { ok: false, error: 'Not signed in' };
+        const text = newBody.trim();
+        const thread = chatThreads.find((t) => t.id === chatId);
+        if (!thread) return { ok: false, error: 'Chat not found' };
+        const msg = thread.messages.find((m) => m.id === messageId);
+        if (!msg) return { ok: false, error: 'Message not found' };
+        if (msg.authorId !== currentUser.id) return { ok: false, error: 'You can only edit your own messages' };
+        if (msg.deleted) return { ok: false, error: 'Message was deleted' };
+        if (!text && !msg.attachment) return { ok: false, error: 'Message cannot be empty' };
+        set({
+          chatThreads: chatThreads.map((t) => {
+            if (t.id !== chatId) return t;
+            return {
+              ...t,
+              messages: t.messages.map((m) =>
+                m.id === messageId
+                  ? { ...m, body: text, editedAt: new Date().toISOString() }
+                  : m
+              ),
+            };
+          }),
+        });
+        return { ok: true };
+      },
+
+      deleteChatMessage: (chatId, messageId) => {
+        const { currentUser, chatThreads } = get();
+        if (!currentUser) return { ok: false, error: 'Not signed in' };
+        const thread = chatThreads.find((t) => t.id === chatId);
+        if (!thread) return { ok: false, error: 'Chat not found' };
+        const msg = thread.messages.find((m) => m.id === messageId);
+        if (!msg) return { ok: false, error: 'Message not found' };
+        if (msg.authorId !== currentUser.id) return { ok: false, error: 'You can only delete your own messages' };
+        if (msg.deleted) return { ok: false, error: 'Already deleted' };
+        set({
+          chatThreads: chatThreads.map((t) => {
+            if (t.id !== chatId) return t;
+            return {
+              ...t,
+              messages: t.messages.map((m) =>
+                m.id === messageId
+                  ? { ...m, deleted: true, body: '', attachment: undefined }
+                  : m
+              ),
+            };
+          }),
+        });
+        return { ok: true };
+      },
+
+      forwardChatMessage: (targetChatId, source) => {
+        const { currentUser, users, chatThreads } = get();
+        if (!currentUser) return { ok: false, error: 'Not signed in' };
+        const { sourceChatId, messageId } = source;
+        if (targetChatId === sourceChatId) {
+          return { ok: false, error: 'Choose a different chat' };
+        }
+        const sourceThread = chatThreads.find((t) => t.id === sourceChatId);
+        const targetThread = chatThreads.find((t) => t.id === targetChatId);
+        if (!sourceThread || !targetThread) return { ok: false, error: 'Chat not found' };
+        if (!isThreadVisibleToViewer(sourceThread, currentUser, users)) {
+          return { ok: false, error: 'No access' };
+        }
+        if (!isThreadVisibleToViewer(targetThread, currentUser, users)) {
+          return { ok: false, error: 'No access' };
+        }
+        const srcMsg = sourceThread.messages.find((m) => m.id === messageId);
+        if (!srcMsg || srcMsg.deleted) return { ok: false, error: 'Message not found' };
+        const text = srcMsg.body.trim();
+        const att = srcMsg.attachment;
+        if (!text && !att) return { ok: false, error: 'Nothing to forward' };
+        if (!canSendInThread(targetThread, currentUser, users)) {
+          return { ok: false, error: 'Read-only for your role' };
+        }
+
+        const getName = (id: string) => users.find((u) => u.id === id)?.name ?? 'Unknown';
+        const sourceChatTitle = chatThreadTitle(sourceThread, currentUser.id, getName);
+        const originalAuthorId = srcMsg.forwardedFrom?.originalAuthorId ?? srcMsg.authorId;
+        const originalAuthorName = getName(originalAuthorId);
+        const newAtt = att ? { ...att } : undefined;
+        const trc = resolveMessageRecipients(targetThread, currentUser.id);
+
+        const msg: ChatMessage = {
+          id: `m-${Math.random().toString(36).slice(2, 12)}`,
+          chatId: targetChatId,
+          senderId: currentUser.id,
+          authorId: currentUser.id,
+          body: text,
+          createdAt: new Date().toISOString(),
+          readByUserIds: [],
+          receiverId: trc.receiverId,
+          groupId: trc.groupId,
+          ...(newAtt ? { attachment: newAtt } : {}),
+          forwardedFrom: {
+            sourceChatTitle,
+            originalAuthorId,
+            originalAuthorName,
+          },
+        };
+        set({
+          chatThreads: get().chatThreads.map((t) =>
+            t.id === targetChatId ? { ...t, messages: [...t.messages, msg] } : t
+          ),
+        });
+        emitChatSocketEvent({ type: 'message:new', chatId: targetChatId, message: msg, source: 'forward' });
+        return { ok: true };
+      },
+
+      openOrCreateDm: (otherUserId) => {
+        const { currentUser, users, chatThreads } = get();
+        if (!currentUser) return { ok: false, error: 'Not signed in' };
+        const other = users.find((u) => u.id === otherUserId);
+        if (!other) return { ok: false, error: 'User not found' };
+        if (!canDm(currentUser.role, other.role)) {
+          return { ok: false, error: 'You cannot message this person' };
+        }
+        const key = dmKeyFor(currentUser.id, otherUserId);
+        const existing = chatThreads.find(
+          (t) =>
+            t.kind === 'dm' &&
+            t.scope === 'dm' &&
+            t.memberIds.length === 2 &&
+            dmKeyFor(t.memberIds[0], t.memberIds[1]) === key
+        );
+        if (existing) return { ok: true, chatId: existing.id };
+
+        const sorted = [currentUser.id, otherUserId].sort();
+        const thread: ChatThread = {
+          id: `dm-${Math.random().toString(36).slice(2, 11)}`,
+          kind: 'dm',
+          scope: 'dm',
+          memberIds: [sorted[0]!, sorted[1]!],
+          messages: [],
+        };
+        set({
+          chatThreads: [...chatThreads, thread],
+        });
+        return { ok: true, chatId: thread.id };
+      },
+
+      createGroupChat: ({ name, memberIds, scope }) => {
+        const { currentUser, users, chatThreads } = get();
+        if (!currentUser) return { ok: false, error: 'Not signed in' };
+        const trimmed = name.trim();
+        if (!trimmed) return { ok: false, error: 'Name required' };
+
+        if (scope === 'official') {
+          if (currentUser.role !== 'Admin') return { ok: false, error: 'Only Admin can create official groups' };
+          const ids = [...new Set([currentUser.id, ...memberIds])];
+          for (const id of ids) {
+            const u = users.find((x) => x.id === id);
+            if (!u || !canAddToOfficialGroup(u)) {
+              return { ok: false, error: 'Invalid member' };
+            }
+          }
+          const thread: ChatThread = {
+            id: `g-off-${Math.random().toString(36).slice(2, 9)}`,
+            kind: 'group',
+            scope: 'official',
+            name: trimmed,
+            createdById: currentUser.id,
+            memberIds: ids,
+            messages: [],
+          };
+          set({
+            chatThreads: [...chatThreads, thread],
+          });
+          return { ok: true, chatId: thread.id };
+        }
+
+        if (scope === 'hr_group') {
+          if (currentUser.role !== 'HR') return { ok: false, error: 'Only HR can create HR groups' };
+          const ids = [...new Set([currentUser.id, ...memberIds])];
+          for (const id of ids) {
+            const u = users.find((x) => x.id === id);
+            if (!u || !canAddToHrGroup(u)) {
+              return { ok: false, error: 'Members must be HR, Team Leader, or Employee' };
+            }
+          }
+          const thread: ChatThread = {
+            id: `g-hr-${Math.random().toString(36).slice(2, 9)}`,
+            kind: 'group',
+            scope: 'hr_group',
+            name: trimmed,
+            createdById: currentUser.id,
+            memberIds: ids,
+            messages: [],
+          };
+          set({
+            chatThreads: [...chatThreads, thread],
+          });
+          return { ok: true, chatId: thread.id };
+        }
+
+        if (scope === 'tl_group') {
+          if (currentUser.role !== 'Team Leader') {
+            return { ok: false, error: 'Only Team Leaders can create TL groups' };
+          }
+          const ids = [...new Set([currentUser.id, ...memberIds])];
+          for (const id of ids) {
+            const u = users.find((x) => x.id === id);
+            if (!u || !canAddToTlGroup(u)) {
+              return { ok: false, error: 'Members must be HR, Team Leader, or Employee (not Admin)' };
+            }
+          }
+          const thread: ChatThread = {
+            id: `g-tl-${Math.random().toString(36).slice(2, 9)}`,
+            kind: 'group',
+            scope: 'tl_group',
+            name: trimmed,
+            createdById: currentUser.id,
+            memberIds: ids,
+            messages: [],
+          };
+          set({
+            chatThreads: [...chatThreads, thread],
+          });
+          return { ok: true, chatId: thread.id };
+        }
+
+        return { ok: false, error: 'Invalid group type' };
+      },
+
+      addMembersToGroup: (chatId, userIds) => {
+        const { currentUser, users, chatThreads } = get();
+        if (!currentUser) return { ok: false, error: 'Not signed in' };
+        const thread = chatThreads.find((t) => t.id === chatId);
+        if (!thread || thread.kind !== 'group') return { ok: false, error: 'Not a group' };
+
+        const unique = [...new Set(userIds)];
+
+        if (thread.scope === 'official') {
+          if (currentUser.role !== 'Admin') {
+            return { ok: false, error: 'Only Admin can add members to official groups' };
+          }
+          for (const id of unique) {
+            const u = users.find((x) => x.id === id);
+            if (!u || !canAddToOfficialGroup(u)) return { ok: false, error: 'Invalid member' };
+          }
+        } else if (thread.scope === 'hr_group') {
+          if (currentUser.role !== 'HR') {
+            return { ok: false, error: 'Only HR can add members to HR groups' };
+          }
+          for (const id of unique) {
+            const u = users.find((x) => x.id === id);
+            if (!u || !canAddToHrGroup(u)) return { ok: false, error: 'Invalid member for HR group' };
+          }
+        } else if (thread.scope === 'tl_group') {
+          if (currentUser.role !== 'Team Leader') {
+            return { ok: false, error: 'Only Team Leaders can add members to TL groups' };
+          }
+          for (const id of unique) {
+            const u = users.find((x) => x.id === id);
+            if (!u || !canAddToTlGroup(u)) return { ok: false, error: 'Invalid member' };
+          }
+        } else {
+          return { ok: false, error: 'Cannot add members to this chat' };
+        }
+
+        set((state) => ({
+          chatThreads: state.chatThreads.map((t) => {
+            if (t.id !== chatId) return t;
+            const merged = [...new Set([...t.memberIds, ...unique])];
+            return { ...t, memberIds: merged };
+          }),
+        }));
+        return { ok: true };
+      },
+
+      markChatRead: (chatId) => {
+        const uid = get().currentUser?.id;
+        if (!uid) return;
+        set((state) => ({
+          chatThreads: state.chatThreads.map((t) => {
+            if (t.id !== chatId) return t;
+            return {
+              ...t,
+              messages: t.messages.map((m) => {
+                if (m.deleted || m.authorId === uid) return m;
+                const prev = m.readByUserIds ?? [];
+                if (prev.includes(uid)) return m;
+                return { ...m, readByUserIds: [...prev, uid] };
+              }),
+            };
+          }),
+        }));
+      },
+
+      receiveIncomingChatMessage: (chatId, fromUserId, input) => {
+        const { currentUser, users, chatThreads } = get();
+        if (!currentUser) return { ok: false, error: 'Not signed in' };
+        const thread = chatThreads.find((t) => t.id === chatId);
+        if (!thread) return { ok: false, error: 'Chat not found' };
+        if (!thread.memberIds.includes(fromUserId)) return { ok: false, error: 'Sender not in chat' };
+        if (!isThreadVisibleToViewer(thread, currentUser, users)) {
+          return { ok: false, error: 'No access' };
+        }
+        const text = input.body.trim();
+        const attachment = input.attachment ?? null;
+        if (!text && !attachment) return { ok: false, error: 'Message is empty' };
+        const rc = resolveMessageRecipients(thread, fromUserId);
+        const msg: ChatMessage = {
+          id: `m-${Math.random().toString(36).slice(2, 12)}`,
+          chatId,
+          senderId: fromUserId,
+          authorId: fromUserId,
+          body: text,
+          createdAt: new Date().toISOString(),
+          readByUserIds: [],
+          receiverId: rc.receiverId,
+          groupId: rc.groupId,
+          ...(attachment ? { attachment } : {}),
+        };
+        set({
+          chatThreads: chatThreads.map((t) =>
+            t.id === chatId ? { ...t, messages: [...t.messages, msg] } : t
+          ),
+        });
+        emitChatSocketEvent({ type: 'message:new', chatId, message: msg, source: 'incoming' });
+        return { ok: true };
+      },
 
       registerUser: (input) => {
         const { name, email, password, phone, department } = input;
@@ -1460,7 +1987,7 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'gdc-storage',
-      version: 7,
+      version: 12,
       migrate: (persistedState: any) => {
         if (!persistedState) return persistedState;
 
@@ -1475,14 +2002,27 @@ export const useStore = create<AppState>()(
 
         // Ensure new slices exist.
         const defaultSites = ['Karachi HQ', 'Lahore Office', 'Islamabad', 'Remote'];
+        const migratedThreads =
+          Array.isArray(persistedState.chatThreads) && persistedState.chatThreads.length > 0
+            ? persistedState.chatThreads
+            : createDefaultChatThreads();
+        const legacyRead =
+          persistedState.chatLastReadAt && typeof persistedState.chatLastReadAt === 'object'
+            ? (persistedState.chatLastReadAt as Record<string, string>)
+            : undefined;
+        const threadsWithReceipts = migrateChatThreadsForReadReceipts(migratedThreads, legacyRead);
+
+        const { chatLastReadAt: _discardLegacyRead, ...persistWithoutRead } = persistedState;
+
         const nextState = {
-          ...persistedState,
+          ...persistWithoutRead,
           sites:
             Array.isArray(persistedState.sites) && persistedState.sites.length > 0
               ? persistedState.sites
               : defaultSites,
           manualTimeRequests: Array.isArray(persistedState.manualTimeRequests) ? persistedState.manualTimeRequests : [],
           passwordResetTokens: Array.isArray(persistedState.passwordResetTokens) ? persistedState.passwordResetTokens : [],
+          chatThreads: threadsWithReceipts,
           users: Array.isArray(persistedState.users)
             ? (persistedState.users as any[]).map((u) => {
                 const fixedStatus = u?.status === 'Holiday' ? { ...u, status: 'Unavailable' as const } : u;

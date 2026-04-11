@@ -8,18 +8,18 @@ import type { ReviewStatusFilter } from './constants';
 export function useRequestManagementController() {
   const {
     currentUser,
-    leaves,
+    Leave,
     users,
-    updateLeaveStatus,
+    updateLeavetatus,
     manualTimeRequests,
     approveManualTimeRequest,
     rejectManualTimeRequest,
   } = useStore(
     useShallow((s) => ({
       currentUser: s.currentUser,
-      leaves: s.leaves,
+      Leave: s.Leave,
       users: s.users,
-      updateLeaveStatus: s.updateLeaveStatus,
+      updateLeavetatus: s.updateLeavetatus,
       manualTimeRequests: s.manualTimeRequests,
       approveManualTimeRequest: s.approveManualTimeRequest,
       rejectManualTimeRequest: s.rejectManualTimeRequest,
@@ -34,15 +34,15 @@ export function useRequestManagementController() {
 
   const getUsername = (userId: string) => users.find((u) => u.id === userId)?.name || 'Unknown User';
 
-  const filteredLeaves = useMemo(() => {
+  const filteredLeave = useMemo(() => {
     const q = searchTerm.toLowerCase();
-    return leaves.filter((leave) => {
+    return Leave.filter((leave) => {
       const userName = (users.find((u) => u.id === leave.userId)?.name || 'Unknown User').toLowerCase();
       const matchesSearch = userName.includes(q);
       const matchesStatus = statusFilter === 'All' || leave.status === statusFilter;
       return matchesSearch && matchesStatus;
     });
-  }, [leaves, searchTerm, statusFilter, users]);
+  }, [Leave, searchTerm, statusFilter, users]);
 
   const filteredManual = useMemo(() => {
     const q = searchTerm.toLowerCase();
@@ -54,14 +54,14 @@ export function useRequestManagementController() {
     });
   }, [manualTimeRequests, searchTerm, statusFilter, users]);
 
-  const sortedLeaves = useMemo(
+  const sortedLeave = useMemo(
     () =>
-      [...filteredLeaves].sort((a, b) => {
+      [...filteredLeave].sort((a, b) => {
         if (a.status === 'Pending' && b.status !== 'Pending') return -1;
         if (a.status !== 'Pending' && b.status === 'Pending') return 1;
         return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       }),
-    [filteredLeaves]
+    [filteredLeave]
   );
 
   const sortedManual = useMemo(
@@ -90,12 +90,12 @@ export function useRequestManagementController() {
     setSearchTerm,
     statusFilter,
     setStatusFilter,
-    sortedLeaves,
+    sortedLeave,
     sortedManual,
     getUsername,
     canReviewLeave,
     canReviewManual,
-    updateLeaveStatus,
+    updateLeavetatus,
     approveManualTimeRequest,
     rejectManualTimeRequest,
     activeRejectId,

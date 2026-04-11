@@ -1,6 +1,6 @@
-import type { LeaveStatus } from '@/lib/store';
+import type { Leavetatus } from '@/lib/store';
 
-export type ReviewStatusFilter = LeaveStatus | 'All';
+export type ReviewStatusFilter = Leavetatus | 'All';
 
 export const REVIEW_STATUS_OPTIONS: { value: ReviewStatusFilter; label: string }[] = [
   { value: 'Pending', label: 'Pending' },

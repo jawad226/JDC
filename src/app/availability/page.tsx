@@ -17,7 +17,7 @@ export default function AvailabilityPage() {
 
 const BOARD_ROLES: Role[] = ['Employee', 'HR', 'Team Leader'];
 type BoardRoleFilter = 'all' | Role;
-type BoardStatusFilter = 'all' | 'Available' | 'Unavailable' | 'Sick';
+type BoardStatusFilter = 'all' | 'Available' | 'Unavailable' | 'Leave';
 
 function toDateInputValue(d: Date): string {
   const y = d.getFullYear();
@@ -37,14 +37,14 @@ function dayStartMs(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
 
-function isApprovedSickLeaveDay(
+function isApprovedLeaveLeaveDay(
   date: Date,
   userId: string,
-  leaves: { userId: string; type: string; status: string; startDate: string; endDate: string }[]
+  Leave: { userId: string; type: string; status: string; startDate: string; endDate: string }[]
 ): boolean {
   const dayMs = dayStartMs(date);
-  return leaves.some((l) => {
-    if (l.userId !== userId || l.type !== 'Sick' || l.status !== 'Approved') return false;
+  return Leave.some((l) => {
+    if (l.userId !== userId || l.type !== 'Leave' || l.status !== 'Approved') return false;
     const startMs = dayStartMs(fromDateInputValue(l.startDate.slice(0, 10)));
     const endMs = dayStartMs(fromDateInputValue(l.endDate.slice(0, 10)));
     return dayMs >= startMs && dayMs <= endMs;
@@ -103,7 +103,7 @@ function AdminAvailabilityBoard() {
           badge: 'bg-amber-100 text-amber-900 border-amber-200/80',
           iconWrap: 'bg-amber-100 text-amber-700',
         };
-      case 'Sick':
+      case 'Leave':
         return {
           dot: 'bg-rose-500',
           ring: 'ring-rose-500/25',
@@ -129,7 +129,7 @@ function AdminAvailabilityBoard() {
   const getStatusIcon = (status?: string) => {
     switch (status) {
       case 'Available': return UserCheck;
-      case 'Sick': return AlertCircle;
+      case 'Leave': return AlertCircle;
       default: return Clock;
     }
   };
@@ -192,7 +192,7 @@ function AdminAvailabilityBoard() {
             >
               All
             </button>
-            {(['Available', 'Unavailable', 'Sick'] as const).map((s) => (
+            {(['Available', 'Unavailable', 'Leave'] as const).map((s) => (
               <button
                 key={s}
                 type="button"
@@ -290,12 +290,12 @@ function AdminAvailabilityBoard() {
 }
 
 function EmployeeAvailabilityView() {
-  const { currentUser, updateUser, timesheets, leaves } = useStore(
+  const { currentUser, updateUser, timesheets, Leave } = useStore(
     useShallow((s) => ({
       currentUser: s.currentUser,
       updateUser: s.updateUser,
       timesheets: s.timesheets,
-      leaves: s.leaves,
+      Leave: s.Leave,
     }))
   );
   const [status, setStatus] = useState(currentUser?.status || 'Available');
@@ -387,18 +387,18 @@ function EmployeeAvailabilityView() {
         daysListed: 0,
         absentDays: 0,
         presentDays: 0,
-        sickDays: 0,
+        LeaveDays: 0,
         totalHours: 0,
       };
     }
     let absentDays = 0;
     let presentDays = 0;
-    let sickDays = 0;
+    let LeaveDays = 0;
     let totalH = 0;
     for (const { date, entry } of attendanceDays) {
-      const sick = isApprovedSickLeaveDay(date, currentUser.id, leaves);
-      if (sick) {
-        sickDays += 1;
+      const isLeaveDay = isApprovedLeaveLeaveDay(date, currentUser.id, Leave);
+      if (isLeaveDay) {
+        LeaveDays += 1;
         if (entry) {
           const isToday =
             date.getFullYear() === now.getFullYear() &&
@@ -435,10 +435,10 @@ function EmployeeAvailabilityView() {
       daysListed: attendanceDays.length,
       absentDays,
       presentDays,
-      sickDays,
+      LeaveDays,
       totalHours: totalH,
     };
-  }, [attendanceDays, now, activeEntry, activeBreak, leaves, currentUser]);
+  }, [attendanceDays, now, activeEntry, activeBreak, Leave, currentUser]);
 
   const applyLastMonth = () => {
     const { start, end } = getLastMonthDateRange();
@@ -485,7 +485,7 @@ function EmployeeAvailabilityView() {
         )}
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          {(['Available', 'Unavailable', 'Sick'] as const).map((s) => {
+          {(['Available', 'Unavailable', 'Leave'] as const).map((s) => {
             const active =
               s === 'Available'
                 ? 'ring-2 ring-emerald-500/40 border-emerald-300 bg-gradient-to-br from-emerald-50 to-white shadow-md shadow-emerald-100/50'
@@ -504,7 +504,7 @@ function EmployeeAvailabilityView() {
                 type="button"
                 onClick={() => {
                   setStatus(s);
-                  updateUser(currentUser.id, { status: s as 'Available' | 'Unavailable' | 'Sick' });
+                  updateUser(currentUser.id, { status: s as 'Available' | 'Unavailable' | 'Leave' });
                 }}
                 className={`flex flex-col items-center justify-center rounded-2xl border-2 px-4 py-5 transition-all ${
                   status === s ? `${active} text-slate-900` : idle
@@ -595,9 +595,9 @@ function EmployeeAvailabilityView() {
               <div className="text-[9px] text-emerald-600/90 mt-1 leading-snug">Has attendance</div>
             </div>
             <div className="rounded-xl border border-rose-200/80 bg-rose-50/40 px-4 py-3 shadow-sm">
-              <div className="text-[10px] font-bold uppercase tracking-widest text-rose-700">Sick</div>
-              <div className="text-xl font-bold text-rose-800 tabular-nums">{logSummary.sickDays}</div>
-              <div className="text-[9px] text-rose-600/90 mt-1 leading-snug">Approved sick leave</div>
+              <div className="text-[10px] font-bold uppercase tracking-widest text-rose-700">Leave</div>
+              <div className="text-xl font-bold text-rose-800 tabular-nums">{logSummary.LeaveDays}</div>
+              <div className="text-[9px] text-rose-600/90 mt-1 leading-snug">Approved Leave leave</div>
             </div>
             <div className="rounded-xl border border-indigo-100 bg-white px-4 py-3 shadow-sm col-span-2 lg:col-span-1">
               <div className="text-[10px] font-bold uppercase tracking-widest text-indigo-500">Total hours</div>
@@ -614,10 +614,10 @@ function EmployeeAvailabilityView() {
               date.getMonth() === now.getMonth() &&
               date.getDate() === now.getDate();
 
-            const sickDay = isApprovedSickLeaveDay(date, currentUser.id, leaves);
+            const LeaveDay = isApprovedLeaveLeaveDay(date, currentUser.id, Leave);
             const isActiveToday = isToday && !!activeEntry && !!entry && !entry.clockOut;
-            const statusLabel = sickDay
-              ? 'Sick'
+            const statusLabel = LeaveDay
+              ? 'Leave'
               : entry
                 ? entry.clockOut
                   ? 'Present'
@@ -627,7 +627,7 @@ function EmployeeAvailabilityView() {
                 : 'Absent';
 
             const badge =
-              statusLabel === 'Sick'
+              statusLabel === 'Leave'
                 ? 'bg-rose-100 text-rose-900 border-rose-200'
                 : statusLabel === 'Present'
                   ? 'bg-emerald-100 text-emerald-900 border-emerald-200'
@@ -644,7 +644,7 @@ function EmployeeAvailabilityView() {
                   : '—';
 
             const rowAccent =
-              statusLabel === 'Sick'
+              statusLabel === 'Leave'
                 ? 'border-l-rose-500'
                 : statusLabel === 'Present'
                   ? 'border-l-emerald-500'

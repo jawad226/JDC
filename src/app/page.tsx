@@ -1,9 +1,27 @@
 'use client';
 
-import { useStore, useShallow, type Task } from '@/lib/store';
+import { useStore, useShallow, isTeamLeaderCreatedTask, type Task } from '@/lib/store';
 import Link from 'next/link';
 import type { LucideIcon } from 'lucide-react';
-import { Play, Square, AlertCircle, Clock, CheckCircle2, Calendar, TrendingUp, UserCheck, Timer, Users, Activity, Target, BarChart3, Shield, Coffee } from 'lucide-react';
+import {
+  Play,
+  Square,
+  AlertCircle,
+  Clock,
+  CheckCircle2,
+  Calendar,
+  TrendingUp,
+  UserCheck,
+  Timer,
+  Users,
+  Activity,
+  Target,
+  BarChart3,
+  Shield,
+  Coffee,
+  LayoutDashboard,
+  ChevronRight,
+} from 'lucide-react';
 import { format, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay, subDays, isWithinInterval } from 'date-fns';
 import { useEffect, useState, useMemo } from 'react';
 
@@ -18,9 +36,25 @@ export default function Dashboard() {
 }
 
 // ─── SHARED COMPONENTS ─────────────────────────────────────────────
-function StatCard({ icon: Icon, label, value, color, bg }: { icon: LucideIcon; label: string; value: number | string; color: string; bg: string }) {
+function StatCard({
+  icon: Icon,
+  label,
+  value,
+  color,
+  bg,
+  className = '',
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: number | string;
+  color: string;
+  bg: string;
+  className?: string;
+}) {
   return (
-    <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm group hover:shadow-md transition-all">
+    <div
+      className={`group min-h-[8.5rem] rounded-[2rem] border border-slate-100 bg-white p-6 shadow-sm transition-all hover:border-slate-200/80 hover:shadow-md ${className}`}
+    >
       <div className={`${bg} ${color} w-10 h-10 rounded-xl flex items-center justify-center mb-4`}>
         <Icon className="w-5 h-5" />
       </div>
@@ -372,67 +406,211 @@ function TaskList({ tasks }: { tasks: Task[] }) {
 
 // ─── 1. ADMIN DASHBOARD ────────────────────────────────────────────
 function AdminDashboard() {
-  const { users, timesheets, tasks, leaves } = useStore(
+  const { users, timesheets, tasks, Leave } = useStore(
     useShallow((s) => ({
       users: s.users,
       timesheets: s.timesheets,
       tasks: s.tasks,
-      leaves: s.leaves,
+      Leave: s.Leave,
     }))
   );
   const now = new Date();
 
   const activeEmployees = timesheets.filter(t => !t.clockOut).length;
-  const pendingLeaves = leaves.filter(l => l.status === 'Pending').length;
-  const overdueTasks = tasks.filter(t => t.status !== 'Approved' && new Date(t.deadline) < now).length;
+  const pendingLeave = Leave.filter(l => l.status === 'Pending').length;
+  const overdueTasks = tasks.filter(
+    t =>
+      !isTeamLeaderCreatedTask(t, users) && t.status !== 'Approved' && new Date(t.deadline) < now
+  ).length;
   const pendingUsers = users.filter(u => u.role === 'Pending User').length;
 
-  return (
-    <div className="max-w-6xl mx-auto space-y-8 pb-12">
-      <h1 className="text-2xl font-bold text-slate-900 tracking-tight">System Overview</h1>
+  const workforceUsers = useMemo(
+    () => users.filter(u => u.role !== 'Pending User'),
+    [users]
+  );
+  const workforceCount = workforceUsers.length;
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-5">
-        <StatCard icon={Users} label="Workforce" value={users.filter(u => u.role !== 'Pending User').length} color="text-blue-500" bg="bg-blue-50" />
-        <StatCard icon={Activity} label="Active Now" value={activeEmployees} color="text-emerald-500" bg="bg-emerald-50" />
-        <StatCard icon={Calendar} label="Pending Leaves" value={pendingLeaves} color="text-amber-500" bg="bg-amber-50" />
-        <StatCard icon={AlertCircle} label="Overdue Tasks" value={overdueTasks} color="text-rose-500" bg="bg-rose-50" />
-        <StatCard icon={Shield} label="Pending Approval" value={pendingUsers} color="text-purple-500" bg="bg-purple-50" />
+  const availabilityClass = (status: string | undefined) =>
+    status === 'Available'
+      ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
+      : status === 'Leave'
+        ? 'bg-rose-50 text-rose-700 border-rose-100'
+        : 'bg-slate-50 text-slate-500 border-slate-100';
+
+  return (
+    <div className="mx-auto max-w-6xl space-y-8 pb-12">
+      <div className="flex flex-col gap-6 border-b border-slate-200/80 pb-8 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 items-start gap-4">
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-md shadow-slate-900/15">
+            <LayoutDashboard className="h-6 w-6" strokeWidth={1.75} aria-hidden />
+          </span>
+          <div className="min-w-0">
+            <h1 className="text-3xl font-light tracking-tight text-slate-800">System overview</h1>
+            <p className="mt-2 max-w-xl text-sm leading-relaxed text-slate-500">
+              High-level workforce activity, leave and task pressure, and who is on the clock right now.
+            </p>
+          </div>
+        </div>
+        <Link
+          href="/admin"
+          className="inline-flex shrink-0 items-center justify-center gap-2 self-start rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-800 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-blue-100"
+        >
+          User administration
+          <ChevronRight className="h-4 w-4 text-slate-400" aria-hidden />
+        </Link>
       </div>
 
-      {/* Live employee status */}
-      <div className="bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-sm">
-        <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2">
-          <Activity className="w-5 h-5 text-blue-500" />
-          Real-time Employee Status
-        </h2>
-        <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2">
-          {users.filter(u => u.role !== 'Pending User').map(user => {
-            const isActive = timesheets.some(t => t.userId === user.id && !t.clockOut);
-            return (
-              <div key={user.id} className="flex items-center justify-between p-4 rounded-2xl hover:bg-slate-50 transition-colors border border-transparent hover:border-slate-100">
-                <div className="flex items-center gap-4">
-                  <div className="h-10 w-10 rounded-xl bg-slate-100 flex items-center justify-center font-bold text-slate-500">{user.name.charAt(0)}</div>
-                  <div>
-                    <p className="text-sm font-bold text-slate-800">{user.name}</p>
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{user.role} • {user.team}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                    user.status === 'Available' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' :
-                    user.status === 'Sick' ? 'bg-rose-50 text-rose-600 border-rose-100' :
-                    'bg-slate-50 text-slate-400 border-slate-100'
-                  }`}>{user.status || 'N/A'}</span>
-                  {isActive ? (
-                    <span className="px-3 py-1 bg-emerald-50 text-emerald-600 text-[10px] font-bold rounded-full border border-emerald-100 animate-pulse">WORKING</span>
-                  ) : (
-                    <span className="px-3 py-1 bg-slate-50 text-slate-300 text-[10px] font-bold rounded-full border border-slate-100">OFFLINE</span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <StatCard
+          icon={Users}
+          label="Workforce"
+          value={workforceCount}
+          color="text-blue-500"
+          bg="bg-blue-50"
+        />
+        <StatCard icon={Activity} label="Active now" value={activeEmployees} color="text-emerald-500" bg="bg-emerald-50" />
+        <StatCard icon={Calendar} label="Pending Leave" value={pendingLeave} color="text-amber-500" bg="bg-amber-50" />
+        <StatCard icon={AlertCircle} label="Overdue tasks" value={overdueTasks} color="text-rose-500" bg="bg-rose-50" />
+        <StatCard icon={Shield} label="Pending approval" value={pendingUsers} color="text-purple-500" bg="bg-purple-50" />
+      </div>
+
+      <div className="overflow-hidden rounded-[2rem] border border-slate-100 bg-white shadow-sm sm:rounded-[2.5rem]">
+        <div className="border-b border-slate-100 bg-slate-50/80 px-6 py-5 sm:px-8">
+          <h2 className="flex flex-wrap items-center gap-x-2 gap-y-1 text-lg font-bold text-slate-800">
+            <Activity className="h-5 w-5 shrink-0 text-blue-500" aria-hidden />
+            <span>Live employee status</span>
+            <span className="text-sm font-semibold text-slate-400">({workforceCount})</span>
+          </h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Availability from profiles; session reflects an open timesheet (clocked in).
+          </p>
         </div>
+
+        {workforceCount === 0 ? (
+          <div className="px-6 py-16 text-center sm:px-8">
+            <p className="text-sm font-medium text-slate-600">No active workforce users yet.</p>
+            <p className="mt-1 text-xs text-slate-400">Approve pending registrations or add users from User administration.</p>
+          </div>
+        ) : (
+          <>
+            {/* Desktop / tablet: table */}
+            <div className="hidden max-h-[400px] overflow-x-auto overflow-y-auto md:block">
+              <table className="w-full min-w-[640px] border-collapse text-left">
+                <thead>
+                  <tr className="border-b border-slate-100 bg-white">
+                    <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400 sm:px-8">
+                      Team member
+                    </th>
+                    <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      Role / team
+                    </th>
+                    <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      Availability
+                    </th>
+                    <th className="px-6 py-3 text-right text-[10px] font-bold uppercase tracking-widest text-slate-400 sm:px-8">
+                      Session
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {workforceUsers.map(user => {
+                    const isActive = timesheets.some(t => t.userId === user.id && !t.clockOut);
+                    return (
+                      <tr
+                        key={user.id}
+                        className="border-b border-slate-50 transition-colors last:border-0 hover:bg-slate-50/80"
+                      >
+                        <td className="px-6 py-4 sm:px-8">
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-sm font-bold text-slate-600">
+                              {user.name.charAt(0)}
+                            </div>
+                            <span className="font-semibold text-slate-900">{user.name}</span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-4">
+                          <span className="text-sm text-slate-700">
+                            {user.role}
+                            {user.team ? (
+                              <>
+                                <span className="text-slate-300"> · </span>
+                                {user.team}
+                              </>
+                            ) : (
+                              <span className="text-slate-400"> · —</span>
+                            )}
+                          </span>
+                        </td>
+                        <td className="px-4 py-4">
+                          <span
+                            className={`inline-flex rounded-full border px-2.5 py-0.5 text-[10px] font-bold ${availabilityClass(user.status)}`}
+                          >
+                            {user.status || 'N/A'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-right sm:px-8">
+                          {isActive ? (
+                            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-[10px] font-bold text-emerald-800">
+                              <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" aria-hidden />
+                              Working
+                            </span>
+                          ) : (
+                            <span className="inline-flex rounded-full border border-slate-100 bg-slate-50 px-3 py-1 text-[10px] font-bold text-slate-400">
+                              Offline
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile: cards */}
+            <div className="space-y-3 p-5 md:hidden">
+              {workforceUsers.map(user => {
+                const isActive = timesheets.some(t => t.userId === user.id && !t.clockOut);
+                return (
+                  <div
+                    key={user.id}
+                    className="flex items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-slate-50/50 p-4 transition-colors hover:border-slate-200 hover:bg-white"
+                  >
+                    <div className="flex min-w-0 items-center gap-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-sm font-bold text-slate-600">
+                        {user.name.charAt(0)}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-bold text-slate-800">{user.name}</p>
+                        <p className="truncate text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                          {user.role}
+                          {user.team ? ` · ${user.team}` : ''}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-2">
+                      <span
+                        className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${availabilityClass(user.status)}`}
+                      >
+                        {user.status || 'N/A'}
+                      </span>
+                      {isActive ? (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-100 bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-800">
+                          <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" aria-hidden />
+                          Working
+                        </span>
+                      ) : (
+                        <span className="rounded-full border border-slate-100 bg-slate-50 px-2.5 py-1 text-[10px] font-bold text-slate-400">
+                          Offline
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -440,22 +618,24 @@ function AdminDashboard() {
 
 // ─── 2. HR DASHBOARD ───────────────────────────────────────────────
 function HRDashboard() {
-  const { currentUser, users, timesheets, tasks, leaves } = useStore(
+  const { currentUser, users, timesheets, tasks, Leave } = useStore(
     useShallow((s) => ({
       currentUser: s.currentUser,
       users: s.users,
       timesheets: s.timesheets,
       tasks: s.tasks,
-      leaves: s.leaves,
+      Leave: s.Leave,
     }))
   );
-  const now = new Date();
 
   const myTeam = currentUser?.team;
   const teamMembers = users.filter(u => u.team === myTeam && u.role !== 'Pending User');
-  const teamTasks = tasks.filter(t => teamMembers.some(m => m.id === t.assignedTo));
+  const teamTasks = tasks.filter(
+    t =>
+      !isTeamLeaderCreatedTask(t, users) && teamMembers.some(m => m.id === t.assignedTo)
+  );
   const completedTasks = teamTasks.filter(t => t.status === 'Approved').length;
-  const pendingLeaves = leaves.filter(l => l.status === 'Pending').length;
+  const pendingLeave = Leave.filter(l => l.status === 'Pending').length;
 
   return (
     <div className="max-w-6xl mx-auto space-y-8 pb-12">
@@ -465,7 +645,7 @@ function HRDashboard() {
         <StatCard icon={Users} label="Team Members" value={teamMembers.length} color="text-blue-500" bg="bg-blue-50" />
         <StatCard icon={Target} label="Team Tasks" value={teamTasks.length} color="text-indigo-500" bg="bg-indigo-50" />
         <StatCard icon={CheckCircle2} label="Completed" value={completedTasks} color="text-emerald-500" bg="bg-emerald-50" />
-        <StatCard icon={Calendar} label="Pending Leaves" value={pendingLeaves} color="text-amber-500" bg="bg-amber-50" />
+        <StatCard icon={Calendar} label="Pending Leave" value={pendingLeave} color="text-amber-500" bg="bg-amber-50" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -504,7 +684,7 @@ function HRDashboard() {
                   </div>
                   <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                     member.status === 'Available' ? 'text-emerald-600 bg-emerald-50' :
-                    member.status === 'Sick' ? 'text-rose-600 bg-rose-50' :
+                    member.status === 'Leave' ? 'text-rose-600 bg-rose-50' :
                     'text-slate-400 bg-slate-50'
                   }`}>{member.status || 'N/A'}</span>
                 </div>
@@ -628,12 +808,12 @@ function TeamLeaderDashboard() {
 
 // ─── 4. USER (EMPLOYEE) DASHBOARD ──────────────────────────────────
 function UserDashboard() {
-  const { currentUser, timesheets, tasks, leaves } = useStore(
+  const { currentUser, timesheets, tasks, Leave } = useStore(
     useShallow((s) => ({
       currentUser: s.currentUser,
       timesheets: s.timesheets,
       tasks: s.tasks,
-      leaves: s.leaves,
+      Leave: s.Leave,
     }))
   );
   const [now, setNow] = useState(new Date());
@@ -645,7 +825,7 @@ function UserDashboard() {
       ...timesheets.filter(t => t.userId === currentUser?.id).map(t => ({
         type: 'Clock', title: t.clockOut ? 'Clocked Out' : 'Clocked In', time: t.clockOut || t.clockIn, icon: Clock, color: t.clockOut ? 'text-slate-400' : 'text-emerald-500'
       })),
-      ...leaves.filter(l => l.userId === currentUser?.id).map(l => ({
+      ...Leave.filter(l => l.userId === currentUser?.id).map(l => ({
         type: 'Leave', title: `Leave Request: ${l.type}`, time: l.createdAt, icon: Calendar, color: 'text-blue-500'
       })),
       ...tasks.filter(t => t.assignedTo === currentUser?.id && t.status === 'Approved').map(t => ({
@@ -653,7 +833,7 @@ function UserDashboard() {
       }))
     ].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime()).slice(0, 3);
     return activities;
-  }, [timesheets, leaves, tasks, currentUser, now]);
+  }, [timesheets, Leave, tasks, currentUser, now]);
 
   useEffect(() => {
     const interval = setInterval(() => setNow(new Date()), 60000);

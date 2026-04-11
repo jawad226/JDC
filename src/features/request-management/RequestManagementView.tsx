@@ -39,15 +39,15 @@ export function RequestManagementView() {
 
           {c.activeTab === 'leave' && (
             <LeaveReviewPanel
-              rows={c.sortedLeaves}
+              rows={c.sortedLeave}
               getUsername={c.getUsername}
               canReview={c.canReviewLeave}
               onApprove={(id) => {
-                c.updateLeaveStatus(id, 'Approved');
+                c.updateLeavetatus(id, 'Approved');
                 alert('Leave approved!');
               }}
               onReject={(id) => {
-                c.updateLeaveStatus(id, 'Rejected');
+                c.updateLeavetatus(id, 'Rejected');
                 alert('Leave rejected!');
               }}
             />

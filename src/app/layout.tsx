@@ -37,7 +37,7 @@ export default function RootLayout({
             </div>
             <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
               <Topbar />
-              <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-slate-50/50 p-8">
+              <main className="scrollbar-hide min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-slate-50/50 p-8 has-[.messages-route-root]:overflow-hidden has-[.messages-route-root]:p-0">
                 {children}
               </main>
             </div>

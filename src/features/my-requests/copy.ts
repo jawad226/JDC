@@ -1,6 +1,6 @@
 import type { RequestStatusFilter } from './types';
 
-export function leaveSectionTitle(filter: RequestStatusFilter): string {
+export function LeaveectionTitle(filter: RequestStatusFilter): string {
   switch (filter) {
     case 'All':
       return 'All Requests';
@@ -26,8 +26,8 @@ export function manualSectionTitle(filter: RequestStatusFilter): string {
   }
 }
 
-export function leaveEmptyMessage(filter: RequestStatusFilter, totalLeaves: number): string {
-  if (totalLeaves === 0) {
+export function leaveEmptyMessage(filter: RequestStatusFilter, totalLeave: number): string {
+  if (totalLeave === 0) {
     return 'You have not submitted any leave requests yet.';
   }
   switch (filter) {

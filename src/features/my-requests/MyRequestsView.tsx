@@ -2,7 +2,7 @@
 
 import { RequestsHubShell } from '@/components/requests/RequestsHubShell';
 import { STATUS_FILTER_OPTIONS } from './constants';
-import { leaveSectionTitle, manualSectionTitle } from './copy';
+import { LeaveectionTitle, manualSectionTitle } from './copy';
 import { LeaveRequestsPanel } from './LeaveRequestsPanel';
 import { ManualTimeRequestsPanel } from './ManualTimeRequestsPanel';
 import { useMyRequestsController } from './useMyRequestsController';
@@ -12,11 +12,11 @@ export function MyRequestsView() {
   const c = useMyRequestsController();
 
   const sectionTitle =
-    c.activeTab === 'leave' ? leaveSectionTitle(c.leaveStatusFilter) : manualSectionTitle(c.manualStatusFilter);
+    c.activeTab === 'leave' ? LeaveectionTitle(c.LeavetatusFilter) : manualSectionTitle(c.manualStatusFilter);
 
   const statusFilterOptions = STATUS_FILTER_OPTIONS;
   const statusFilterValue =
-    c.activeTab === 'leave' ? c.leaveStatusFilter : c.manualStatusFilter;
+    c.activeTab === 'leave' ? c.LeavetatusFilter : c.manualStatusFilter;
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 pb-12">
@@ -31,9 +31,9 @@ export function MyRequestsView() {
         <>
           {c.activeTab === 'leave' ? (
             <LeaveRequestsPanel
-              leaveStatusFilter={c.leaveStatusFilter}
-              rows={c.filteredLeaves}
-              totalCount={c.myLeaves.length}
+              LeavetatusFilter={c.LeavetatusFilter}
+              rows={c.filteredLeave}
+              totalCount={c.myLeave.length}
               formOpen={c.leaveFormOpen}
               onCloseModal={() => c.setLeaveFormOpen(false)}
               onOpenModal={() => c.setLeaveFormOpen(true)}

@@ -1,0 +1,290 @@
+import type { Role, User } from '@/lib/store';
+
+export type ChatScope = 'dm' | 'official' | 'hr_group' | 'tl_group';
+
+/** Client-side attachment (data URL); demo / local persistence only. */
+export interface ChatAttachment {
+  fileName: string;
+  mimeType: string;
+  dataUrl: string;
+}
+
+/** Shown when this message was forwarded from another chat (like WhatsApp). */
+export interface ForwardedFromMeta {
+  /** Chat name / DM peer title where the message came from. */
+  sourceChatTitle: string;
+  originalAuthorId: string;
+  originalAuthorName: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  chatId: string;
+  /** Sender (same as authorId; kept for clarity vs DB-style naming). */
+  senderId?: string;
+  authorId: string;
+  body: string;
+  createdAt: string;
+  /** DM: the peer user id this message is for; groups: null. */
+  receiverId?: string | null;
+  /** Group / channel id when message is to a group (usually same as chatId). */
+  groupId?: string | null;
+  /**
+   * User IDs who have read this message (read receipts).
+   * Unread for viewer = incoming message where viewer id is not in this list.
+   */
+  readByUserIds?: string[];
+  /** Optional file or image sent with the message. */
+  attachment?: ChatAttachment;
+  /** Set when message text was edited. */
+  editedAt?: string;
+  /** Soft-delete: content hidden, id kept for reply chains. */
+  deleted?: boolean;
+  /** Reply to another message in the same thread. */
+  replyToId?: string;
+  /** Copied from another conversation; original sender preserved for clarity. */
+  forwardedFrom?: ForwardedFromMeta;
+}
+
+/** Whether `userId` has read this message (derived from readByUserIds). */
+export function isMessageReadByUser(m: ChatMessage, userId: string): boolean {
+  return (m.readByUserIds ?? []).includes(userId);
+}
+
+/** DM: other member; group: null / group id via groupId. */
+export function resolveMessageRecipients(
+  thread: ChatThread,
+  authorId: string
+): { receiverId: string | null; groupId: string | null } {
+  if (thread.kind === 'dm') {
+    const other = thread.memberIds.find((id) => id !== authorId) ?? null;
+    return { receiverId: other, groupId: null };
+  }
+  return { receiverId: null, groupId: thread.id };
+}
+
+export function normalizeChatMessage(m: ChatMessage, thread: ChatThread): ChatMessage {
+  const { receiverId, groupId } = resolveMessageRecipients(thread, m.authorId);
+  return {
+    ...m,
+    senderId: m.senderId ?? m.authorId,
+    readByUserIds: m.readByUserIds ?? [],
+    receiverId: m.receiverId ?? receiverId,
+    groupId: m.groupId ?? groupId,
+  };
+}
+
+/** Migrate persisted threads: fill read receipts + ids; optional last-read watermark from legacy store. */
+export function migrateChatThreadsForReadReceipts(
+  threads: ChatThread[],
+  legacyChatLastReadAt?: Record<string, string>
+): ChatThread[] {
+  return threads.map((thread) => {
+    const lr = legacyChatLastReadAt?.[thread.id];
+    const lrMs = lr ? new Date(lr).getTime() : 0;
+    return {
+      ...thread,
+      messages: thread.messages.map((m) => {
+        const base = normalizeChatMessage(m, thread);
+        if ((base.readByUserIds?.length ?? 0) > 0) return base;
+        const t = new Date(base.createdAt).getTime();
+        const impliedRead =
+          lrMs > 0 && t <= lrMs
+            ? thread.memberIds.filter((id) => id !== base.authorId)
+            : [];
+        return { ...base, readByUserIds: impliedRead };
+      }),
+    };
+  });
+}
+
+export interface ChatThread {
+  id: string;
+  kind: 'dm' | 'group';
+  scope: ChatScope;
+  /** Group: display name */
+  name?: string;
+  createdById?: string;
+  /** DM: two user ids sorted; same as memberIds for dm */
+  memberIds: string[];
+  messages: ChatMessage[];
+}
+
+/** DM permission matrix (From → To). Pending users cannot DM. */
+export function canDm(from: Role, to: Role): boolean {
+  if (from === 'Pending User' || to === 'Pending User') return false;
+  if (from === 'Admin') return to === 'HR' || to === 'Team Leader';
+  if (from === 'HR') return to === 'Admin' || to === 'Team Leader' || to === 'Employee';
+  if (from === 'Team Leader') return to === 'HR' || to === 'Employee';
+  if (from === 'Employee') return to === 'HR' || to === 'Team Leader';
+  return false;
+}
+
+export function dmKeyFor(userIdA: string, userIdB: string): string {
+  return [userIdA, userIdB].sort().join(':');
+}
+
+/** Sidebar / header title for a thread (same logic as chat list labels). */
+export function chatThreadTitle(
+  thread: ChatThread,
+  currentUserId: string,
+  userName: (id: string) => string
+): string {
+  if (thread.kind === 'dm') {
+    const other = thread.memberIds.find((id) => id !== currentUserId);
+    return other ? userName(other) : 'Direct message';
+  }
+  return thread.name || 'Group';
+}
+
+/**
+ * Unread = messages from others where current user is a recipient and has not read yet
+ * (readByUserIds does not include currentUserId).
+ */
+export function unreadCountForThread(thread: ChatThread, currentUserId: string): number {
+  return thread.messages.filter((m) => isIncomingUnreadForUser(m, currentUserId)).length;
+}
+
+function isIncomingUnreadForUser(m: ChatMessage, viewerId: string): boolean {
+  if (m.deleted) return false;
+  if (m.authorId === viewerId) return false;
+  return !isMessageReadByUser(m, viewerId);
+}
+
+/** Total unread across all chats the viewer can see (sidebar badge). */
+export function totalUnreadMessagesForViewer(threads: ChatThread[], viewer: User, allUsers: User[]): number {
+  let n = 0;
+  for (const t of threads) {
+    if (!isThreadVisibleToViewer(t, viewer, allUsers)) continue;
+    n += unreadCountForThread(t, viewer.id);
+  }
+  return n;
+}
+
+function roleOf(userId: string, users: User[]): Role | null {
+  return users.find((u) => u.id === userId)?.role ?? null;
+}
+
+/** Whether `viewer` may see this thread in the sidebar / open it. */
+export function isThreadVisibleToViewer(
+  thread: ChatThread,
+  viewer: User,
+  _users: User[]
+): boolean {
+  if (viewer.role === 'Pending User') return false;
+
+  if (thread.kind === 'dm') {
+    return thread.memberIds.includes(viewer.id);
+  }
+
+  // Official groups: visible to everyone (not pending); membership controls posting via `canSendInThread`.
+  if (thread.scope === 'official') return true;
+
+  if (!thread.memberIds.includes(viewer.id)) return false;
+
+  if (thread.scope === 'hr_group') {
+    if (viewer.role === 'Admin') return false;
+    return true;
+  }
+
+  if (thread.scope === 'tl_group') {
+    if (viewer.role === 'Admin') return false;
+    return true;
+  }
+
+  return false;
+}
+
+/** Whether `user` may post a new message in this thread. */
+export function canSendInThread(
+  thread: ChatThread,
+  user: User,
+  users: User[]
+): boolean {
+  if (user.role === 'Pending User') return false;
+  // Posting requires membership (official broadcast is read-only for users not in `memberIds`).
+  if (!thread.memberIds.includes(user.id)) return false;
+
+  if (thread.kind === 'dm') {
+    const otherId = thread.memberIds.find((id) => id !== user.id);
+    if (!otherId) return false;
+    const otherRole = roleOf(otherId, users);
+    if (!otherRole) return false;
+    return canDm(user.role, otherRole);
+  }
+
+  const r = user.role;
+
+  if (thread.scope === 'official') {
+    return r === 'Admin' || r === 'HR' || r === 'Team Leader';
+  }
+
+  if (thread.scope === 'hr_group') {
+    if (r === 'Admin') return false;
+    if (r === 'HR' || r === 'Team Leader') return true;
+    if (r === 'Employee') return true;
+    return false;
+  }
+
+  if (thread.scope === 'tl_group') {
+    if (r === 'Admin') return false;
+    if (r === 'HR' || r === 'Team Leader') return true;
+    if (r === 'Employee') return true;
+    return false;
+  }
+
+  return false;
+}
+
+/** Users that can be picked as DM targets for `viewer`. */
+export function dmTargetUserIds(viewer: User, users: User[]): string[] {
+  if (!viewer || viewer.role === 'Pending User') return [];
+  return users
+    .filter((u) => u.id !== viewer.id && u.role !== 'Pending User')
+    .filter((u) => canDm(viewer.role, u.role))
+    .map((u) => u.id);
+}
+
+/** Who can be added to a new HR-scoped group (creator is HR). */
+export function canAddToHrGroup(user: User): boolean {
+  return user.role === 'HR' || user.role === 'Team Leader' || user.role === 'Employee';
+}
+
+/** Who can be added to a new TL-scoped group (creator is TL). */
+export function canAddToTlGroup(user: User): boolean {
+  return user.role === 'HR' || user.role === 'Team Leader' || user.role === 'Employee';
+}
+
+/** Who can be added to official group (Admin managing). */
+export function canAddToOfficialGroup(user: User): boolean {
+  return user.role !== 'Pending User';
+}
+
+/** Seeded official channel for first load / migration. */
+export function createDefaultChatThreads(): ChatThread[] {
+  const createdAt = new Date().toISOString();
+  return [
+    {
+      id: 'g-official-1',
+      kind: 'group',
+      scope: 'official',
+      name: 'Company announcements',
+      createdById: '2',
+      memberIds: ['1', '2', '3', '4', '5'],
+      messages: [
+        {
+          id: 'seed-m1',
+          chatId: 'g-official-1',
+          senderId: '2',
+          authorId: '2',
+          receiverId: null,
+          groupId: 'g-official-1',
+          readByUserIds: [],
+          body:
+            'Welcome to Company announcements. This channel is visible to everyone. Employees can read; only Admin, HR, and Team Leaders can post.',
+          createdAt,
+        },
+      ],
+    },
+  ];
+}

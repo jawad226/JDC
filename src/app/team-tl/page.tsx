@@ -12,30 +12,11 @@ import {
   ChevronDown,
   Menu,
 } from 'lucide-react';
-import { useStore, useShallow, type User } from '@/lib/store';
+import { useStore, useShallow } from '@/lib/store';
 import { cn } from '@/lib/utils';
 import { AttendanceLogPagination } from '@/components/attendance/attendanceLogUi';
 
-const DEPT_ALL = 'All';
 const TEAM_ALL = 'All';
-
-/** Department filter labels (matches `department` / `workSite` on users). */
-const DEPARTMENT_OPTIONS = [
-  'Frontend',
-  'Backend',
-  'MERN Stack',
-  'Full Stack',
-  'SEO',
-  'WordPress',
-  'Digital Marketing',
-] as const;
-
-function matchesDepartmentFilter(u: User, filter: string): boolean {
-  if (filter === DEPT_ALL) return true;
-  const f = filter.trim().toLowerCase();
-  const pool = [u.department, u.workSite].filter(Boolean).map((s) => String(s).toLowerCase());
-  return pool.some((p) => p === f || p.includes(f) || f.includes(p));
-}
 
 function initials(name: string) {
   const p = name.trim().split(/\s+/).filter(Boolean);
@@ -67,7 +48,6 @@ export default function TeamAssignTLPage() {
     }))
   );
 
-  const [departmentFilter, setDepartmentFilter] = useState(DEPT_ALL);
   const [teamNameFilter, setTeamNameFilter] = useState(TEAM_ALL);
   const [selectedLeaderId, setSelectedLeaderId] = useState('');
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
@@ -89,11 +69,16 @@ export default function TeamAssignTLPage() {
     [users]
   );
 
+  /** Filter + modal: all names in `teams` (registry, including new creates) plus any team string on users. */
   const teamNameOptions = useMemo(() => {
     const s = new Set<string>();
-    for (const t of teams) s.add(t);
+    for (const t of teams) {
+      const x = typeof t === 'string' ? t.trim() : '';
+      if (x) s.add(x);
+    }
     for (const u of users) {
-      if (u.team) s.add(u.team);
+      const x = u.team?.trim();
+      if (x) s.add(x);
     }
     return [...s].sort((a, b) => a.localeCompare(b));
   }, [teams, users]);
@@ -101,11 +86,10 @@ export default function TeamAssignTLPage() {
   const teamLeaderOptions = useMemo(() => {
     return users.filter((u) => {
       if (u.role !== 'Team Leader' || !u.team) return false;
-      if (!matchesDepartmentFilter(u, departmentFilter)) return false;
       if (teamNameFilter !== TEAM_ALL && u.team !== teamNameFilter) return false;
       return true;
     });
-  }, [users, departmentFilter, teamNameFilter]);
+  }, [users, teamNameFilter]);
 
   useEffect(() => {
     if (!selectedLeaderId) return;
@@ -170,7 +154,7 @@ export default function TeamAssignTLPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [selectedLeaderId, departmentFilter, teamNameFilter]);
+  }, [selectedLeaderId, teamNameFilter]);
 
   const otherTeams = useMemo(
     () => teams.filter((t) => t !== selectedTeam),
@@ -187,9 +171,7 @@ export default function TeamAssignTLPage() {
     setLeaderId('');
     setSelectedEmployees(new Set());
     setModalTeamName(selectedTeam || '');
-    const ws = selectedLeader?.workSite?.trim();
-    const opts = DEPARTMENT_OPTIONS as readonly string[];
-    setDepartmentName(ws && opts.includes(ws) ? ws : DEPARTMENT_OPTIONS[0]);
+    setDepartmentName(selectedLeader?.workSite?.trim() || '');
     setModalOpen(true);
   };
 
@@ -203,7 +185,7 @@ export default function TeamAssignTLPage() {
       teamName: tn,
       leaderUserId: leaderId,
       employeeIds: [...selectedEmployees],
-      siteName: departmentName,
+      siteName: departmentName.trim(),
     });
     if (result.ok) {
       setMessage({ type: 'ok', text: 'Team roster saved successfully.' });
@@ -258,28 +240,7 @@ export default function TeamAssignTLPage() {
 
         {/* Filter bar + primary action */}
         <div className="mb-6 flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:flex-row lg:items-end lg:justify-between">
-          <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <label className="flex min-w-0 flex-col gap-1.5 text-xs font-semibold text-slate-600">
-              Department name
-              <div className="relative">
-                <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <select
-                  value={departmentFilter}
-                  onChange={(e) => {
-                    setDepartmentFilter(e.target.value);
-                    setMessage(null);
-                  }}
-                  className="w-full appearance-none rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-3 pr-9 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-100"
-                >
-                  <option value={DEPT_ALL}>All departments</option>
-                  {DEPARTMENT_OPTIONS.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </label>
+          <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
             <label className="flex min-w-0 flex-col gap-1.5 text-xs font-semibold text-slate-600">
               Team name
               <div className="relative">
@@ -301,7 +262,7 @@ export default function TeamAssignTLPage() {
                 </select>
               </div>
             </label>
-            <label className="flex min-w-0 flex-col gap-1.5 text-xs font-semibold text-slate-600 sm:col-span-2 lg:col-span-1">
+            <label className="flex min-w-0 flex-col gap-1.5 text-xs font-semibold text-slate-600">
               Team Leader name
               <div className="relative">
                 <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -371,8 +332,8 @@ export default function TeamAssignTLPage() {
                   <tr>
                     <td colSpan={7} className="px-4 py-16 text-center text-slate-500">
                       <Users className="mx-auto mb-3 h-10 w-10 text-slate-300" />
-                      Use <strong>Department</strong> / <strong>Team name</strong> (optional), then choose a{' '}
-                      <strong>team leader</strong> to load their roster.
+                      Use <strong>Team name</strong> (optional), then choose a <strong>team leader</strong> to load their
+                      roster.
                     </td>
                   </tr>
                 ) : pagedRows.length === 0 ? (
@@ -500,7 +461,6 @@ export default function TeamAssignTLPage() {
         {selectedTeam && selectedLeader ? (
           <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <h3 className="text-sm font-bold text-slate-900">Add employees to “{selectedTeam}”</h3>
-            <p className="mt-1 text-xs text-slate-500">Unassigned employees only; department follows the team leader.</p>
             <div className="mt-3 flex max-h-40 flex-wrap gap-2 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/50 p-2">
               {employeesWithoutTeam.length === 0 ? (
                 <span className="text-xs text-slate-500">No unassigned employees.</span>
@@ -557,11 +517,18 @@ export default function TeamAssignTLPage() {
       {modalOpen && (
         <div
           className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/60 p-4 backdrop-blur-[2px] sm:items-center"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="modal-roster-title"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeModal();
+          }}
         >
-          <div className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-200/90 bg-white shadow-2xl">
+          <div
+            className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-200/90 bg-white shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="modal-roster-title"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white px-6 py-4">
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-blue-600">New team</p>
@@ -591,7 +558,7 @@ export default function TeamAssignTLPage() {
                   className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm"
                 />
                 <datalist id="modal-team-options">
-                  {teams.map((t) => (
+                  {teamNameOptions.map((t) => (
                     <option key={t} value={t} />
                   ))}
                 </datalist>
@@ -599,7 +566,6 @@ export default function TeamAssignTLPage() {
 
               <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Team leader</span>
-                <p className="mt-1 text-xs text-slate-600">Only leaders not already on a team.</p>
                 <select
                   required
                   value={leaderId}
@@ -620,7 +586,6 @@ export default function TeamAssignTLPage() {
 
               <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Employees (min. 2)</span>
-                <p className="mt-1 text-xs text-slate-600">Unassigned only.</p>
                 <div className="mt-2 max-h-40 overflow-y-auto rounded-lg border border-slate-200 bg-white">
                   {employeesWithoutTeam.length === 0 ? (
                     <p className="p-3 text-center text-xs text-slate-500">None available.</p>
@@ -644,27 +609,30 @@ export default function TeamAssignTLPage() {
               </div>
 
               <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Department</span>
-                <p className="mt-1 text-xs text-slate-600">
-                  Applies to the team leader and selected employees (shown in filters as department / location).
-                </p>
-                <select
+                <label htmlFor="modal-dept-name" className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                  Department
+                </label>
+                <input
+                  id="modal-dept-name"
+                  type="text"
                   required
                   value={departmentName}
                   onChange={(e) => setDepartmentName(e.target.value)}
-                  className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-800"
-                >
-                  {DEPARTMENT_OPTIONS.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="e.g. MERN Stack, Frontend, SEO"
+                  autoComplete="off"
+                  className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-800 placeholder:text-slate-400"
+                />
               </div>
 
               <button
                 type="submit"
-                disabled={teamLeadersWithoutTeam.length === 0 || !leaderId || selectedEmployees.size < 2}
+                disabled={
+                  teamLeadersWithoutTeam.length === 0 ||
+                  !leaderId ||
+                  !modalTeamName.trim() ||
+                  !departmentName.trim() ||
+                  selectedEmployees.size < 2
+                }
                 className="w-full rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
               >
                 Create team
