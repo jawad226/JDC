@@ -9,10 +9,7 @@ import {
   X,
   Lock,
   Hash,
-  Archive,
-  SlidersHorizontal,
   SquarePen,
-  Search,
   MoreVertical,
   Paperclip,
   FileText,
@@ -20,8 +17,10 @@ import {
   Pencil,
   Trash2,
   Forward,
+  Camera,
+  UserMinus,
 } from 'lucide-react';
-import { useStore, useShallow } from '@/lib/store';
+import { useStore, useShallow, canManageGroupSettings, canDeleteGroup } from '@/lib/store';
 import type { User } from '@/lib/store';
 import type { ChatAttachment, ChatMessage, ChatThread } from '@/lib/messaging';
 import {
@@ -35,8 +34,7 @@ import {
   unreadCountForThread,
 } from '@/lib/messaging';
 import { format, isSameDay } from 'date-fns';
-
-const MAX_CHAT_FILE_BYTES = 5 * 1024 * 1024;
+import { MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_FILE_MB } from '@/lib/file-upload-limits';
 
 function lastActivityMs(thread: ChatThread): number {
   const last = thread.messages[thread.messages.length - 1];
@@ -144,6 +142,14 @@ function ThreadListAvatar({
     if (!other) return <div className="h-11 w-11 shrink-0 rounded-2xl bg-slate-200" />;
     return <UserAvatar userId={other} users={users} size="md" variant="list" />;
   }
+  if (thread.avatarUrl) {
+    return (
+      <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-2xl ring-2 ring-white shadow-inner">
+        {/* eslint-disable-next-line @next/next/no-img-element -- group avatar data URL */}
+        <img src={thread.avatarUrl} alt="" className="h-full w-full object-cover" />
+      </div>
+    );
+  }
   return (
     <div className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-100 to-violet-100 text-indigo-600 shadow-inner ring-2 ring-white">
       <Hash className="h-5 w-5" strokeWidth={2} />
@@ -166,6 +172,9 @@ export default function MessagesPage() {
     openOrCreateDm,
     createGroupChat,
     addMembersToGroup,
+    removeMembersFromGroup,
+    updateGroupChat,
+    deleteGroupChat,
     markChatRead,
   } = useStore(
     useShallow((s) => ({
@@ -179,6 +188,9 @@ export default function MessagesPage() {
       openOrCreateDm: s.openOrCreateDm,
       createGroupChat: s.createGroupChat,
       addMembersToGroup: s.addMembersToGroup,
+      removeMembersFromGroup: s.removeMembersFromGroup,
+      updateGroupChat: s.updateGroupChat,
+      deleteGroupChat: s.deleteGroupChat,
       markChatRead: s.markChatRead,
     }))
   );
@@ -197,8 +209,12 @@ export default function MessagesPage() {
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<ChatMessage | null>(null);
+  const [groupInfoOpen, setGroupInfoOpen] = useState(false);
+  const [groupNameEdit, setGroupNameEdit] = useState('');
+  const [groupModalAddIds, setGroupModalAddIds] = useState<string[]>([]);
   const listEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const groupAvatarInputRef = useRef<HTMLInputElement>(null);
 
   const userName = (id: string) => users.find((u) => u.id === id)?.name ?? 'Unknown';
 
@@ -248,6 +264,22 @@ export default function MessagesPage() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [forwardingMessage]);
+
+  useEffect(() => {
+    if (groupInfoOpen && selected?.kind === 'group') {
+      setGroupNameEdit(selected.name ?? '');
+      setGroupModalAddIds([]);
+    }
+  }, [groupInfoOpen, selected?.id, selected?.kind, selected?.name]);
+
+  useEffect(() => {
+    if (!groupInfoOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setGroupInfoOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [groupInfoOpen]);
 
   useEffect(() => {
     setReplyingTo(null);
@@ -308,8 +340,8 @@ export default function MessagesPage() {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    if (file.size > MAX_CHAT_FILE_BYTES) {
-      setErrorHint('File too large (max 5 MB).');
+    if (file.size > MAX_UPLOAD_FILE_BYTES) {
+      setErrorHint(`File too large (max ${MAX_UPLOAD_FILE_MB} MB).`);
       return;
     }
     const reader = new FileReader();
@@ -387,6 +419,77 @@ export default function MessagesPage() {
     } else setErrorHint(r.error ?? 'Could not forward');
   };
 
+  const canEditSelectedGroup =
+    selected?.kind === 'group' && currentUser ? canManageGroupSettings(selected, currentUser) : false;
+
+  const canRemoveSelectedGroup =
+    selected?.kind === 'group' && currentUser ? canDeleteGroup(selected, currentUser) : false;
+
+  const saveGroupDetailsName = () => {
+    if (!selected || selected.kind !== 'group') return;
+    setErrorHint(null);
+    const r = updateGroupChat(selected.id, { name: groupNameEdit });
+    if (!r.ok) setErrorHint(r.error ?? 'Could not update name');
+  };
+
+  const handleGroupAvatarPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !selected || selected.kind !== 'group') return;
+    if (file.size > MAX_UPLOAD_FILE_BYTES) {
+      setErrorHint(`Image too large (max ${MAX_UPLOAD_FILE_MB} MB).`);
+      e.target.value = '';
+      return;
+    }
+    setErrorHint(null);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const r = updateGroupChat(selected.id, { avatarUrl: reader.result as string });
+      if (!r.ok) setErrorHint(r.error ?? 'Could not update photo');
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const handleDeleteSelectedGroup = () => {
+    if (!selected || selected.kind !== 'group') return;
+    if (!window.confirm('Delete this group for everyone? All messages in it will be removed.')) return;
+    setErrorHint(null);
+    const id = selected.id;
+    const r = deleteGroupChat(id);
+    if (r.ok) {
+      setGroupInfoOpen(false);
+      setSelectedId(null);
+    } else setErrorHint(r.error ?? 'Could not delete');
+  };
+
+  const confirmRemoveOrLeaveMember = (userId: string) => {
+    if (!selected || selected.kind !== 'group' || !currentUser) return;
+    const isSelf = userId === currentUser.id;
+    const u = users.find((x) => x.id === userId);
+    const msg = isSelf
+      ? 'Leave this group? You will stop receiving messages here.'
+      : `Remove ${u?.name ?? 'this person'} from the group?`;
+    if (!window.confirm(msg)) return;
+    setErrorHint(null);
+    const r = removeMembersFromGroup(selected.id, [userId]);
+    if (!r.ok) {
+      setErrorHint(r.error ?? 'Could not update members');
+      return;
+    }
+    if (isSelf) {
+      setGroupInfoOpen(false);
+      setSelectedId(null);
+    }
+  };
+
+  const addSelectedMembersInGroupModal = () => {
+    if (!selected || selected.kind !== 'group' || groupModalAddIds.length === 0) return;
+    setErrorHint(null);
+    const r = addMembersToGroup(selected.id, groupModalAddIds);
+    if (r.ok) setGroupModalAddIds([]);
+    else setErrorHint(r.error ?? 'Could not add');
+  };
+
   if (!currentUser) {
     return (
       <div className="mx-auto max-w-lg py-20 text-center text-slate-600">
@@ -419,20 +522,6 @@ export default function MessagesPage() {
             <div className="flex shrink-0 items-center justify-between border-b border-slate-200/70 bg-slate-100 px-4 py-3.5">
               <p className="text-[15px] font-semibold tracking-tight text-slate-900">Chat</p>
               <div className="flex items-center gap-0.5">
-                <button
-                  type="button"
-                  className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
-                  aria-label="Archive"
-                >
-                  <Archive className="h-4 w-4" />
-                </button>
-                <button
-                  type="button"
-                  className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
-                  aria-label="Filter"
-                >
-                  <SlidersHorizontal className="h-4 w-4" />
-                </button>
                 <button
                   type="button"
                   onClick={() => {
@@ -574,29 +663,30 @@ export default function MessagesPage() {
                     })()}
                     {selected.kind === 'group' && (
                       <p className="truncate text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                        {selected.scope === 'official'
-                          ? 'Official · everyone'
-                          : selected.scope === 'hr_group'
-                            ? 'HR group'
-                            : 'Team group'}
+                        {selected.teamKey
+                          ? `Team chat · ${selected.teamKey}`
+                          : selected.scope === 'official'
+                            ? 'Official · everyone'
+                            : selected.scope === 'hr_group'
+                              ? 'HR group'
+                              : 'Team group'}
                       </p>
                     )}
                   </div>
                   <div className="flex shrink-0 items-center gap-0.5">
-                    <button
-                      type="button"
-                      className="rounded-xl p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-                      aria-label="Search"
-                    >
-                      <Search className="h-5 w-5" />
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-xl p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-                      aria-label="More"
-                    >
-                      <MoreVertical className="h-5 w-5" />
-                    </button>
+                    {selected.kind === 'group' && (
+                      <button
+                        type="button"
+                        className="rounded-xl p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                        aria-label="Group details"
+                        onClick={() => {
+                          setErrorHint(null);
+                          setGroupInfoOpen(true);
+                        }}
+                      >
+                        <MoreVertical className="h-5 w-5" />
+                      </button>
+                    )}
                   </div>
                   {canShowAddMembers && eligibleToAddToSelected.length > 0 && (
                     <button
@@ -919,6 +1009,189 @@ export default function MessagesPage() {
           </div>
         </div>
       </div>
+
+      {groupInfoOpen && selected?.kind === 'group' && (
+        <div
+          className="fixed inset-0 z-[103] flex items-end justify-center bg-slate-900/50 p-4 backdrop-blur-sm sm:items-center"
+          role="dialog"
+          aria-modal
+          aria-label="Group details"
+          onClick={(e) => e.target === e.currentTarget && setGroupInfoOpen(false)}
+        >
+          <div
+            className="scrollbar-hide flex max-h-[90vh] w-full max-w-md flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-100 px-5 py-4">
+              <h2 className="text-lg font-bold text-slate-900">Group details</h2>
+              <button
+                type="button"
+                className="rounded-xl p-2 text-slate-400 hover:bg-slate-100"
+                onClick={() => setGroupInfoOpen(false)}
+                aria-label="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="scrollbar-hide min-h-0 flex-1 overflow-y-auto px-5 py-4">
+              {errorHint && (
+                <p className="mb-3 rounded-xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">
+                  {errorHint}
+                </p>
+              )}
+              <div className="flex flex-col items-center gap-3">
+                <div className="relative">
+                  <ThreadListAvatar thread={selected} currentUserId={currentUser.id} users={users} />
+                  {canEditSelectedGroup && (
+                    <>
+                      <input
+                        ref={groupAvatarInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handleGroupAvatarPick}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => groupAvatarInputRef.current?.click()}
+                        className="absolute -bottom-1 -right-1 flex h-8 w-8 items-center justify-center rounded-full border-2 border-white bg-indigo-600 text-white shadow-md hover:bg-indigo-700"
+                        aria-label="Change group photo"
+                      >
+                        <Camera className="h-4 w-4" />
+                      </button>
+                    </>
+                  )}
+                </div>
+                {canEditSelectedGroup && selected.avatarUrl && (
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-slate-500 hover:text-rose-600"
+                    onClick={() => {
+                      setErrorHint(null);
+                      updateGroupChat(selected.id, { avatarUrl: null });
+                    }}
+                  >
+                    Remove photo
+                  </button>
+                )}
+              </div>
+              <label className="mt-4 block text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                Group name
+              </label>
+              <div className="mt-1 flex gap-2">
+                <input
+                  value={groupNameEdit}
+                  onChange={(e) => setGroupNameEdit(e.target.value)}
+                  disabled={!canEditSelectedGroup}
+                  className="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm disabled:bg-slate-50"
+                />
+                {canEditSelectedGroup && (
+                  <button
+                    type="button"
+                    onClick={saveGroupDetailsName}
+                    className="shrink-0 rounded-xl bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-700"
+                  >
+                    Save
+                  </button>
+                )}
+              </div>
+              {canShowAddMembers && (
+                <>
+                  <p className="mt-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                    Add members
+                  </p>
+                  {eligibleToAddToSelected.length === 0 ? (
+                    <p className="mt-2 text-xs text-slate-500">No one else can be added right now.</p>
+                  ) : (
+                    <>
+                      <div className="scrollbar-hide mt-2 max-h-40 space-y-1 overflow-y-auto rounded-xl border border-slate-100 bg-slate-50/50 p-2">
+                        {eligibleToAddToSelected.map((u) => (
+                          <label
+                            key={u.id}
+                            className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={groupModalAddIds.includes(u.id)}
+                              onChange={() => toggleMember(u.id, groupModalAddIds, setGroupModalAddIds)}
+                            />
+                            <span className="text-sm text-slate-800">
+                              {u.name} <span className="text-slate-500">({u.role})</span>
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        disabled={groupModalAddIds.length === 0}
+                        onClick={addSelectedMembersInGroupModal}
+                        className="mt-2 w-full rounded-2xl bg-indigo-600 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Add selected
+                      </button>
+                    </>
+                  )}
+                </>
+              )}
+              <p className="mt-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                Members ({selected.memberIds.length})
+              </p>
+              <ul className="mt-2 space-y-2">
+                {[...selected.memberIds]
+                  .sort((a, b) => userName(a).localeCompare(userName(b)))
+                  .map((id) => {
+                    const u = users.find((x) => x.id === id);
+                    const isSelf = id === currentUser.id;
+                    const canLeaveGroup = isSelf && selected.memberIds.length > 1;
+                    const canRemoveOther = !isSelf && canShowAddMembers;
+                    return (
+                      <li
+                        key={id}
+                        className="flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50/80 px-3 py-2"
+                      >
+                        <UserAvatar userId={id} users={users} size="sm" variant="list" />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-semibold text-slate-900">{userName(id)}</p>
+                          <p className="truncate text-xs text-slate-500">{u?.role ?? ''}</p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          {canRemoveOther && (
+                            <button
+                              type="button"
+                              className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                              aria-label={`Remove ${userName(id)} from group`}
+                              onClick={() => confirmRemoveOrLeaveMember(id)}
+                            >
+                              <UserMinus className="h-4 w-4" />
+                            </button>
+                          )}
+                          {canLeaveGroup && (
+                            <button
+                              type="button"
+                              className="rounded-lg px-2 py-1 text-xs font-semibold text-rose-600 hover:bg-rose-50"
+                              onClick={() => confirmRemoveOrLeaveMember(id)}
+                            >
+                              Leave
+                            </button>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
+              </ul>
+              {canRemoveSelectedGroup && (
+                <button
+                  type="button"
+                  onClick={handleDeleteSelectedGroup}
+                  className="mt-6 w-full rounded-2xl border border-rose-200 bg-rose-50 py-3 text-sm font-semibold text-rose-700 hover:bg-rose-100"
+                >
+                  Delete group
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {lightbox && (
         <div

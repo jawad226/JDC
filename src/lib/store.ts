@@ -13,10 +13,62 @@ import {
   createDefaultChatThreads,
   resolveMessageRecipients,
   migrateChatThreadsForReadReceipts,
+  teamGroupChatId,
+  canDmPair,
 } from '@/lib/messaging';
 import { emitChatSocketEvent } from '@/lib/chat-socket';
+import { MAX_UPLOAD_FILE_BYTES } from '@/lib/file-upload-limits';
 
 const initialChatThreads = createDefaultChatThreads();
+
+function mergeTeamGroupChat(threads: ChatThread[], teamName: string, users: User[]): ChatThread[] {
+  const trimmed = teamName.trim();
+  if (!trimmed) return threads;
+  const onTeam = users.filter(
+    (u) => u.team === trimmed && (u.role === 'Team Leader' || u.role === 'Employee')
+  );
+  if (onTeam.length < 2) return threads;
+  const memberIds = [...new Set(onTeam.map((u) => u.id))].sort((a, b) => a.localeCompare(b));
+  const tl = onTeam.find((u) => u.role === 'Team Leader');
+  const id = teamGroupChatId(trimmed);
+  const thread: ChatThread = {
+    id,
+    kind: 'group',
+    scope: 'tl_group',
+    name: `Team: ${trimmed}`,
+    createdById: tl?.id ?? memberIds[0]!,
+    memberIds,
+    messages: [],
+    teamKey: trimmed,
+  };
+  const idx = threads.findIndex((t) => t.id === id);
+  if (idx < 0) return [...threads, thread];
+  return threads.map((t, i) =>
+    i === idx
+      ? {
+          ...t,
+          memberIds: thread.memberIds,
+          teamKey: trimmed,
+          name: t.name?.trim() ? t.name : thread.name,
+          createdById: t.createdById || thread.createdById,
+        }
+      : t
+  );
+}
+
+export function canManageGroupSettings(thread: ChatThread, user: User | null): boolean {
+  if (!user || thread.kind !== 'group') return false;
+  if (thread.scope === 'official') return user.role === 'Admin';
+  if (thread.scope === 'hr_group') return user.role === 'HR';
+  if (thread.scope === 'tl_group') {
+    return user.role === 'HR' || thread.createdById === user.id;
+  }
+  return false;
+}
+
+export function canDeleteGroup(thread: ChatThread, user: User | null): boolean {
+  return canManageGroupSettings(thread, user);
+}
 
 /** Use with `useStore(useShallow(...))` when selecting multiple fields so unrelated store updates don’t re-render the component. */
 export { useShallow } from 'zustand/react/shallow';
@@ -125,7 +177,7 @@ export interface Task {
   deadline: string;
   comments: TaskComment[];
   history?: TaskHistoryEntry[];
-  /** Required on create (max 5MB); optional on older / seeded tasks */
+  /** Required on create (max 20MB); optional on older / seeded tasks */
   attachment?: TaskAttachment;
 }
 
@@ -329,6 +381,12 @@ interface AppState {
     scope: 'official' | 'hr_group' | 'tl_group';
   }) => { ok: true; chatId: string } | { ok: false; error?: string };
   addMembersToGroup: (chatId: string, userIds: string[]) => { ok: true } | { ok: false; error?: string };
+  removeMembersFromGroup: (chatId: string, userIds: string[]) => { ok: true } | { ok: false; error?: string };
+  updateGroupChat: (
+    chatId: string,
+    input: { name?: string; avatarUrl?: string | null }
+  ) => { ok: true } | { ok: false; error?: string };
+  deleteGroupChat: (chatId: string) => { ok: true } | { ok: false; error?: string };
   /** Mark all messages in a chat as read for the current user (read receipts). */
   markChatRead: (chatId: string) => void;
   /** Simulate another user sending a message (frontend “socket” demo). */
@@ -896,7 +954,7 @@ export const useStore = create<AppState>()(
         if (!currentUser) return;
         const { title, description, assignedTo, deadline, attachment } = input;
 
-        const maxBytes = 5 * 1024 * 1024;
+        const maxBytes = MAX_UPLOAD_FILE_BYTES;
         if (!attachment?.dataUrl || attachment.fileSize > maxBytes || attachment.fileSize <= 0) return;
 
         const assignedUser = users.find(u => u.id === assignedTo);
@@ -1360,7 +1418,9 @@ export const useStore = create<AppState>()(
             if (refreshed) currentUser = refreshed;
           }
 
-          return { users: next, teams, currentUser };
+          const chatThreads = mergeTeamGroupChat(state.chatThreads, trimmedTeam, next);
+
+          return { users: next, teams, currentUser, chatThreads };
         });
 
         return { ok: true };
@@ -1525,7 +1585,8 @@ export const useStore = create<AppState>()(
             const refreshed = next.find((x) => x.id === currentUser!.id);
             if (refreshed) currentUser = refreshed;
           }
-          return { users: next, teams, currentUser };
+          const chatThreads = mergeTeamGroupChat(state.chatThreads, trimmed, next);
+          return { users: next, teams, currentUser, chatThreads };
         });
         return { ok: true };
       },
@@ -1692,7 +1753,7 @@ export const useStore = create<AppState>()(
         if (!currentUser) return { ok: false, error: 'Not signed in' };
         const other = users.find((u) => u.id === otherUserId);
         if (!other) return { ok: false, error: 'User not found' };
-        if (!canDm(currentUser.role, other.role)) {
+        if (!canDmPair(currentUser, other)) {
           return { ok: false, error: 'You cannot message this person' };
         }
         const key = dmKeyFor(currentUser.id, otherUserId);
@@ -1845,6 +1906,99 @@ export const useStore = create<AppState>()(
             return { ...t, memberIds: merged };
           }),
         }));
+        return { ok: true };
+      },
+
+      removeMembersFromGroup: (chatId, userIds) => {
+        const { currentUser, chatThreads } = get();
+        if (!currentUser) return { ok: false, error: 'Not signed in' };
+        const thread = chatThreads.find((t) => t.id === chatId);
+        if (!thread || thread.kind !== 'group') return { ok: false, error: 'Not a group' };
+
+        const unique = [...new Set(userIds)].filter(Boolean);
+        if (unique.length === 0) return { ok: false, error: 'No members selected' };
+
+        for (const id of unique) {
+          if (!thread.memberIds.includes(id)) {
+            return { ok: false, error: 'User is not in this group' };
+          }
+        }
+
+        const nextMembers = thread.memberIds.filter((id) => !unique.includes(id));
+        if (nextMembers.length < 1) {
+          return { ok: false, error: 'The group must keep at least one member.' };
+        }
+
+        const removingOthers = unique.some((id) => id !== currentUser.id);
+        if (removingOthers) {
+          if (thread.scope === 'official') {
+            if (currentUser.role !== 'Admin') {
+              return { ok: false, error: 'Only Admin can remove members from official groups' };
+            }
+          } else if (thread.scope === 'hr_group') {
+            if (currentUser.role !== 'HR') {
+              return { ok: false, error: 'Only HR can remove members from HR groups' };
+            }
+          } else if (thread.scope === 'tl_group') {
+            if (currentUser.role !== 'Team Leader') {
+              return { ok: false, error: 'Only Team Leaders can remove members from these groups' };
+            }
+          } else {
+            return { ok: false, error: 'Cannot remove members from this chat' };
+          }
+        } else {
+          if (!unique.includes(currentUser.id)) {
+            return { ok: false, error: 'Invalid request' };
+          }
+        }
+
+        set({
+          chatThreads: chatThreads.map((t) =>
+            t.id === chatId ? { ...t, memberIds: nextMembers } : t
+          ),
+        });
+        return { ok: true };
+      },
+
+      updateGroupChat: (chatId, input) => {
+        const { currentUser, chatThreads } = get();
+        if (!currentUser) return { ok: false, error: 'Not signed in' };
+        const thread = chatThreads.find((t) => t.id === chatId);
+        if (!thread || thread.kind !== 'group') return { ok: false, error: 'Not a group' };
+        if (!canManageGroupSettings(thread, currentUser)) {
+          return { ok: false, error: 'You cannot edit this group' };
+        }
+        const name = input.name?.trim();
+        if (name === '') return { ok: false, error: 'Name cannot be empty' };
+        set({
+          chatThreads: chatThreads.map((t) => {
+            if (t.id !== chatId) return t;
+            return {
+              ...t,
+              ...(name ? { name } : {}),
+              ...(input.avatarUrl !== undefined
+                ? { avatarUrl: input.avatarUrl ?? undefined }
+                : {}),
+            };
+          }),
+        });
+        return { ok: true };
+      },
+
+      deleteGroupChat: (chatId) => {
+        const { currentUser, chatThreads } = get();
+        if (!currentUser) return { ok: false, error: 'Not signed in' };
+        const thread = chatThreads.find((t) => t.id === chatId);
+        if (!thread || thread.kind !== 'group') return { ok: false, error: 'Not a group' };
+        if (!canDeleteGroup(thread, currentUser)) {
+          return { ok: false, error: 'You cannot delete this group' };
+        }
+        if (thread.scope === 'official' && thread.id === 'g-official-1') {
+          return { ok: false, error: 'This channel cannot be deleted' };
+        }
+        set({
+          chatThreads: chatThreads.filter((t) => t.id !== chatId),
+        });
         return { ok: true };
       },
 

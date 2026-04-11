@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore, type Department } from '@/lib/store';
 import { Info, Camera } from 'lucide-react';
+import { MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_FILE_MB } from '@/lib/file-upload-limits';
 
 const DEPARTMENTS: Department[] = ['Web Design', 'MERN Stack', 'Web Development', 'SEO'];
 
@@ -50,6 +51,11 @@ export default function ProfilePage() {
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !file.type.startsWith('image/')) return;
+    if (file.size > MAX_UPLOAD_FILE_BYTES) {
+      alert(`Image too large (max ${MAX_UPLOAD_FILE_MB} MB).`);
+      e.target.value = '';
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result === 'string') setAvatar(reader.result);

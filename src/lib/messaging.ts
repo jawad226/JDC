@@ -104,10 +104,24 @@ export interface ChatThread {
   scope: ChatScope;
   /** Group: display name */
   name?: string;
+  /** Group: optional photo (data URL, client-only). */
+  avatarUrl?: string;
+  /** When set, this thread is the auto team chat for this team name. */
+  teamKey?: string;
   createdById?: string;
   /** DM: two user ids sorted; same as memberIds for dm */
   memberIds: string[];
   messages: ChatMessage[];
+}
+
+/** Stable id for the auto-created team group chat. */
+export function teamGroupChatId(teamName: string): string {
+  const slug = teamName
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9-]/g, '');
+  return `team-g-${slug || 'team'}`;
 }
 
 /** DM permission matrix (From → To). Pending users cannot DM. */
@@ -236,12 +250,29 @@ export function canSendInThread(
   return false;
 }
 
+/** DM pair check (includes same-team employees messaging each other). */
+export function canDmPair(viewer: User, target: User): boolean {
+  if (!viewer || !target || viewer.role === 'Pending User' || target.role === 'Pending User') {
+    return false;
+  }
+  if (canDm(viewer.role, target.role)) return true;
+  if (
+    viewer.role === 'Employee' &&
+    target.role === 'Employee' &&
+    viewer.team &&
+    viewer.team === target.team
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /** Users that can be picked as DM targets for `viewer`. */
 export function dmTargetUserIds(viewer: User, users: User[]): string[] {
   if (!viewer || viewer.role === 'Pending User') return [];
   return users
     .filter((u) => u.id !== viewer.id && u.role !== 'Pending User')
-    .filter((u) => canDm(viewer.role, u.role))
+    .filter((u) => canDmPair(viewer, u))
     .map((u) => u.id);
 }
 

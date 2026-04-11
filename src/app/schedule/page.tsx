@@ -29,7 +29,9 @@ import { useStore, useShallow, getManagementTaskDisplayStatus, isTeamLeaderCreat
 import type { Task, TaskHistoryEntry, TaskPriority, TaskWorkflowStatus, Role } from '@/lib/store';
 import { format } from 'date-fns';
 
-const MAX_TASK_FILE_BYTES = 5 * 1024 * 1024;
+import { MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_FILE_MB } from '@/lib/file-upload-limits';
+
+const MAX_TASK_FILE_BYTES = MAX_UPLOAD_FILE_BYTES;
 
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -729,7 +731,10 @@ export default function TasksPage() {
                       className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-slate-500"
                     >
                       <Paperclip className="h-3.5 w-3.5 text-blue-500" aria-hidden />
-                      Attachment <span className="font-normal normal-case text-slate-400">(required · max 5 MB)</span>
+                      Attachment{' '}
+                      <span className="font-normal normal-case text-slate-400">
+                        (required · max {MAX_UPLOAD_FILE_MB} MB)
+                      </span>
                     </label>
                     <input
                       ref={createFileInputRef}
