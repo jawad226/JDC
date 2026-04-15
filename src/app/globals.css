@@ -1,7 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
+  /* Match app shell (Tailwind slate-50) so scroll/overscroll never flashes pure white */
+  --background: #f8fafc;
   --foreground: #171717;
 }
 

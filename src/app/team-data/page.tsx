@@ -1,17 +1,52 @@
 'use client';
 
-import { PersonalStats, TimesheetTable } from '@/app/timesheet/page';
+import { TeamAttendanceStats, TimesheetTable } from '@/features/timesheet/widgets';
+import { TaskTotalWorkDisplay } from '@/components/tasks/TaskTotalWorkDisplay';
 import { useStore, useShallow } from '@/lib/store';
+import type { Task, TaskWorkflowStatus } from '@/lib/store';
+import { getLatestHistoryAtMs, taskHasActivityInLastDays } from '@/lib/taskWorkTimer';
+import { format } from 'date-fns';
 import {
   AlertCircle,
+  ArrowUpRight,
   BarChart3,
+  CalendarDays,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Clock,
+  LayoutList,
+  Plus,
   Target,
+  Timer,
   Users,
 } from 'lucide-react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, type ComponentType } from 'react';
+import { useEffect, useMemo, useState, type ComponentType } from 'react';
+
+const TEAM_TIMER_WINDOW_DAYS = 7;
+const TIMER_PAGE_SIZE_OPTIONS = [5, 10, 15, 20] as const;
+const DEFAULT_TIMER_PAGE_SIZE = 10;
+
+/** Compact page list with gaps for large page counts. */
+function getTimerPaginationPages(current: number, total: number): (number | 'gap')[] {
+  if (total <= 1) return [1];
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const pages: (number | 'gap')[] = [];
+  const push = (p: number | 'gap') => {
+    if (pages.length && pages[pages.length - 1] === p) return;
+    pages.push(p);
+  };
+  push(1);
+  const left = Math.max(2, current - 1);
+  const right = Math.min(total - 1, current + 1);
+  if (left > 2) push('gap');
+  for (let p = left; p <= right; p++) push(p);
+  if (right < total - 1) push('gap');
+  push(total);
+  return pages;
+}
 
 function StatCard({
   icon: Icon,
@@ -37,6 +72,26 @@ function StatCard({
   );
 }
 
+function statusChipClass(status: TaskWorkflowStatus): string {
+  if (status === 'Pending') return 'bg-amber-50 text-amber-800 border-amber-200/80';
+  if (status === 'In Progress') return 'bg-sky-50 text-sky-900 border-sky-200/80';
+  if (status === 'Submitted') return 'bg-indigo-50 text-indigo-900 border-indigo-200/80';
+  if (status === 'Review') return 'bg-violet-50 text-violet-900 border-violet-200/80';
+  if (status === 'Approved') return 'bg-emerald-50 text-emerald-900 border-emerald-200/80';
+  return 'bg-slate-50 text-slate-700 border-slate-200/80';
+}
+
+function taskRefLabel(id: string): string {
+  return `TASK-${id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase()}`;
+}
+
+function getLatestSubmitNote(task: Task): string | null {
+  const withNote = (task.history || []).filter((e) => e.action === 'Submit' && e.feedback?.trim());
+  if (!withNote.length) return null;
+  withNote.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+  return withNote[0]!.feedback!.trim();
+}
+
 export default function TeamDataPage() {
   const router = useRouter();
   const { currentUser, users, timesheets, tasks } = useStore(
@@ -47,12 +102,67 @@ export default function TeamDataPage() {
       tasks: s.tasks,
     }))
   );
+  const [timerAssigneeFilterId, setTimerAssigneeFilterId] = useState('');
+  const [timerPage, setTimerPage] = useState(1);
+  const [timerPageSize, setTimerPageSize] = useState(DEFAULT_TIMER_PAGE_SIZE);
 
   useEffect(() => {
     if (currentUser && currentUser.role !== 'Team Leader') {
       router.replace('/');
     }
   }, [currentUser, router]);
+
+  const isTl = currentUser?.role === 'Team Leader';
+  const myTeam = currentUser?.team;
+
+  const teamMembers = useMemo(() => {
+    if (!isTl || !myTeam) return [];
+    return users.filter((u) => u.team === myTeam && u.role !== 'Pending User');
+  }, [isTl, myTeam, users]);
+
+  const teamTasks = useMemo(() => {
+    if (!isTl || teamMembers.length === 0) return [];
+    const memberIds = new Set(teamMembers.map((m) => m.id));
+    return tasks.filter((t) => memberIds.has(t.assignedTo));
+  }, [isTl, teamMembers, tasks]);
+
+  const teamTasksTimerList = useMemo(() => {
+    if (!isTl) return [];
+    const now = new Date();
+    let list = teamTasks.filter((t) => taskHasActivityInLastDays(t, TEAM_TIMER_WINDOW_DAYS, now));
+    if (timerAssigneeFilterId) {
+      list = list.filter((t) => t.assignedTo === timerAssigneeFilterId);
+    }
+    return [...list].sort((a, b) => {
+      const aLive = a.status === 'In Progress' ? 1 : 0;
+      const bLive = b.status === 'In Progress' ? 1 : 0;
+      if (bLive !== aLive) return bLive - aLive;
+      return getLatestHistoryAtMs(b) - getLatestHistoryAtMs(a);
+    });
+  }, [isTl, teamTasks, timerAssigneeFilterId]);
+
+  const timerTotalCount = teamTasksTimerList.length;
+  const timerTotalPages = Math.max(1, Math.ceil(timerTotalCount / timerPageSize));
+
+  useEffect(() => {
+    setTimerPage(1);
+  }, [timerAssigneeFilterId, timerPageSize]);
+
+  useEffect(() => {
+    if (timerPage > timerTotalPages) setTimerPage(timerTotalPages);
+  }, [timerPage, timerTotalPages]);
+
+  const paginatedTimerTasks = useMemo(() => {
+    const start = (timerPage - 1) * timerPageSize;
+    return teamTasksTimerList.slice(start, start + timerPageSize);
+  }, [teamTasksTimerList, timerPage, timerPageSize]);
+
+  const timerRangeStart = timerTotalCount === 0 ? 0 : (timerPage - 1) * timerPageSize + 1;
+  const timerRangeEnd = Math.min(timerPage * timerPageSize, timerTotalCount);
+  const timerPaginationPages = useMemo(
+    () => getTimerPaginationPages(timerPage, timerTotalPages),
+    [timerPage, timerTotalPages]
+  );
 
   if (!currentUser || currentUser.role !== 'Team Leader') {
     return (
@@ -63,41 +173,39 @@ export default function TeamDataPage() {
   }
 
   const now = new Date();
-  const myTeam = currentUser.team;
-  const teamMembers = users.filter((u) => u.team === myTeam && u.role !== 'Pending User');
-  const teamTasks = tasks.filter((t) => teamMembers.some((m) => m.id === t.assignedTo));
   const completedTasks = teamTasks.filter((t) => t.status === 'Approved').length;
   const inProgressTasks = teamTasks.filter((t) => t.status === 'In Progress').length;
   const overdueTasks = teamTasks.filter(
     (t) => t.status !== 'Approved' && new Date(t.deadline) < now
   ).length;
 
+  /** Team log: direct reports only — not the viewing TL’s own attendance (that stays under “My Weekly Hours”). */
   const teamTimesheets = timesheets
     .filter((t) => teamMembers.some((m) => m.id === t.userId))
+    .filter((t) => t.userId !== currentUser.id)
     .sort((a, b) => new Date(b.clockIn).getTime() - new Date(a.clockIn).getTime());
+
+  const hasAnyTimerWindowActivity = teamTasks.some((t) =>
+    taskHasActivityInLastDays(t, TEAM_TIMER_WINDOW_DAYS, now)
+  );
+  const liveTasksInTimerList = teamTasksTimerList.filter((t) => t.status === 'In Progress').length;
 
   return (
     <div className="max-w-6xl mx-auto space-y-10 pb-12">
-      <div>
-        <h1 className="text-3xl font-light text-slate-800 tracking-tight">Team Data</h1>
-        <p className="mt-2 text-slate-500 font-medium">
-          {myTeam ? (
-            <>
-              <span className="font-semibold text-slate-700">{myTeam}</span>
-              {' · '}
-              Work progress and attendance for your team.
-            </>
-          ) : (
-            'Assign a team to your profile to see roster data.'
-          )}
-        </p>
-      </div>
-
       <section className="space-y-6">
-        <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2 border-b border-slate-100 pb-3">
-          <Target className="w-5 h-5 text-indigo-500" />
-          Work progress
-        </h2>
+        <div className="flex flex-col gap-4 border-b border-slate-100 pb-3 sm:flex-row sm:items-center sm:justify-between">
+          <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+            <Target className="w-5 h-5 text-indigo-500" />
+            Work progress
+          </h2>
+          <Link
+            href="/project-manager"
+            className="inline-flex w-fit items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-bold text-white shadow-md shadow-indigo-200/40 transition hover:bg-indigo-700"
+          >
+            <Plus className="h-4 w-4" aria-hidden />
+            Create task (Project Manager)
+          </Link>
+        </div>
 
         <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
           <StatCard icon={Users} label="Team size" value={teamMembers.length} color="text-blue-500" bg="bg-blue-50" />
@@ -199,16 +307,305 @@ export default function TeamDataPage() {
         </div>
       </section>
 
+      <section className="relative scroll-mt-6" aria-labelledby="live-task-timers-heading">
+        <div className="relative overflow-hidden rounded-[2rem] border border-slate-200/90 bg-gradient-to-br from-white via-slate-50/95 to-indigo-50/40 p-5 shadow-[0_25px_60px_-15px_rgba(15,23,42,0.15)] sm:p-7 lg:p-8">
+          <div
+            className="pointer-events-none absolute -right-28 -top-28 h-80 w-80 rounded-full bg-gradient-to-br from-indigo-400/25 via-sky-300/20 to-transparent blur-3xl"
+            aria-hidden
+          />
+          <div
+            className="pointer-events-none absolute -bottom-32 -left-20 h-80 w-80 rounded-full bg-gradient-to-tr from-violet-300/20 to-transparent blur-3xl"
+            aria-hidden
+          />
+
+          <div className="relative space-y-5">
+            <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div className="flex items-start gap-4">
+                <span className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-600 via-blue-600 to-sky-500 text-white shadow-xl shadow-indigo-500/25 ring-[3px] ring-white">
+                  <Timer className="h-7 w-7" strokeWidth={2} aria-hidden />
+                </span>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 id="live-task-timers-heading" className="text-2xl font-bold tracking-tight text-slate-900">
+                      Live task timers
+                    </h2>
+                    {teamTasksTimerList.length > 0 ? (
+                      <>
+                        <span className="rounded-full border border-slate-200/80 bg-white/90 px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wide text-slate-600 shadow-sm">
+                          {timerTotalCount} tasks
+                        </span>
+                        {liveTasksInTimerList > 0 ? (
+                          <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200/90 bg-emerald-50/95 px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wide text-emerald-900 shadow-sm">
+                            <span className="relative flex h-2 w-2">
+                              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-70" />
+                              <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                            </span>
+                            {liveTasksInTimerList} live
+                          </span>
+                        ) : null}
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            </header>
+
+            <div className="grid gap-4 rounded-[1.35rem] border border-slate-200/70 bg-white/95 p-4 shadow-lg shadow-slate-200/30 sm:grid-cols-2 sm:items-end sm:gap-6 sm:p-5">
+              <div className="space-y-2">
+                <div className="flex items-center gap-2.5 text-sm font-bold text-slate-800">
+                  <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-50 to-violet-50 text-indigo-600 ring-1 ring-indigo-100/80">
+                    <Users className="h-4 w-4" aria-hidden />
+                  </span>
+                  <label htmlFor="team-timer-assignee">Filter by employee</label>
+                </div>
+                <select
+                  id="team-timer-assignee"
+                  value={timerAssigneeFilterId}
+                  onChange={(e) => setTimerAssigneeFilterId(e.target.value)}
+                  className="w-full cursor-pointer rounded-xl border border-slate-200/90 bg-gradient-to-b from-slate-50/90 to-white px-4 py-3.5 text-sm font-semibold text-slate-900 shadow-sm outline-none transition hover:border-indigo-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                >
+                  <option value="">All team members</option>
+                  {teamMembers
+                    .slice()
+                    .sort((a, b) => a.name.localeCompare(b.name))
+                    .map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name}
+                      </option>
+                    ))}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center gap-2.5 text-sm font-bold text-slate-800">
+                  <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-sky-50 to-blue-50 text-sky-600 ring-1 ring-sky-100/80">
+                    <LayoutList className="h-4 w-4" aria-hidden />
+                  </span>
+                  <label htmlFor="team-timer-page-size">Tasks per page</label>
+                </div>
+                <select
+                  id="team-timer-page-size"
+                  value={timerPageSize}
+                  onChange={(e) => setTimerPageSize(Number(e.target.value))}
+                  className="w-full cursor-pointer rounded-xl border border-slate-200/90 bg-gradient-to-b from-slate-50/90 to-white px-4 py-3.5 text-sm font-semibold text-slate-900 shadow-sm outline-none transition hover:border-sky-200 focus:border-sky-500 focus:ring-2 focus:ring-sky-100 sm:max-w-xs"
+                >
+                  {TIMER_PAGE_SIZE_OPTIONS.map((n) => (
+                    <option key={n} value={n}>
+                      {n} per page
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {!hasAnyTimerWindowActivity ? (
+              <div className="rounded-[1.75rem] border-2 border-dashed border-slate-200/90 bg-gradient-to-b from-white to-slate-50/80 px-6 py-14 text-center">
+                <span className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-100 text-slate-400 ring-4 ring-white shadow-inner">
+                  <Timer className="h-8 w-8" aria-hidden />
+                </span>
+                <p className="mt-4 text-base font-semibold text-slate-800">No activity in the last {TEAM_TIMER_WINDOW_DAYS} days</p>
+                <p className="mx-auto mt-2 max-w-sm text-sm text-slate-500">
+                  When someone presses <strong className="font-semibold text-slate-700">Start Work</strong>, their task shows here with tracked time.
+                </p>
+                <Link
+                  href="/project-manager"
+                  className="mt-6 inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-indigo-200/50 transition hover:bg-indigo-700"
+                >
+                  Open Project Manager
+                  <ArrowUpRight className="h-4 w-4" aria-hidden />
+                </Link>
+              </div>
+            ) : teamTasksTimerList.length === 0 ? (
+              <div className="rounded-[1.75rem] border-2 border-dashed border-amber-200/80 bg-amber-50/50 px-6 py-12 text-center">
+                <p className="text-base font-semibold text-slate-800">No tasks for this filter</p>
+                <p className="mt-2 text-sm text-slate-600">Try another team member or show everyone.</p>
+                <button
+                  type="button"
+                  onClick={() => setTimerAssigneeFilterId('')}
+                  className="mt-5 rounded-xl bg-white px-5 py-2.5 text-sm font-bold text-indigo-700 shadow-md ring-1 ring-indigo-100 transition hover:bg-indigo-50"
+                >
+                  Show all team members
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex flex-col gap-3 rounded-2xl border border-indigo-100/80 bg-gradient-to-r from-indigo-50/90 via-white to-sky-50/60 px-4 py-3.5 shadow-sm sm:flex-row sm:items-center sm:justify-between sm:px-5">
+                  <p className="text-sm text-slate-700">
+                    Showing{' '}
+                    <span className="font-bold tabular-nums text-slate-900">
+                      {timerRangeStart}–{timerRangeEnd}
+                    </span>{' '}
+                    of <span className="font-bold tabular-nums text-slate-900">{timerTotalCount}</span>
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-lg bg-white/90 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-slate-500 shadow-sm ring-1 ring-slate-100">
+                      Page {timerPage} / {timerTotalPages}
+                    </span>
+                  </div>
+                </div>
+
+                <ul className="space-y-4">
+                  {paginatedTimerTasks.map((task, idx) => {
+                    const assignee = users.find((u) => u.id === task.assignedTo);
+                    const submitNote = getLatestSubmitNote(task);
+                    const live = task.status === 'In Progress';
+                    const initial = (assignee?.name ?? '?').trim().charAt(0).toUpperCase();
+                    const rowNumber = timerRangeStart + idx;
+                    return (
+                      <li
+                        key={task.id}
+                        className="group relative overflow-hidden rounded-2xl border border-slate-200/70 bg-white/95 shadow-[0_4px_24px_-6px_rgba(15,23,42,0.1)] transition duration-300 hover:-translate-y-0.5 hover:border-indigo-200/90 hover:shadow-[0_20px_40px_-12px_rgba(79,70,229,0.18)]"
+                      >
+                        <div
+                          className="pointer-events-none absolute inset-0 bg-gradient-to-br from-indigo-50/0 via-transparent to-sky-50/0 opacity-0 transition duration-300 group-hover:from-indigo-50/40 group-hover:to-sky-50/30 group-hover:opacity-100"
+                          aria-hidden
+                        />
+                        {live ? (
+                          <div
+                            className="absolute left-0 top-0 h-full w-1.5 rounded-r-full bg-gradient-to-b from-emerald-400 via-teal-400 to-sky-500 shadow-[2px_0_12px_rgba(16,185,129,0.35)]"
+                            aria-hidden
+                          />
+                        ) : null}
+                        <div className="relative flex flex-col gap-5 p-5 sm:flex-row sm:items-stretch sm:justify-between sm:gap-6 sm:p-6">
+                          <div className="flex min-w-0 flex-1 gap-4">
+                            <div className="relative shrink-0">
+                              <span className="absolute -left-1 -top-1 z-10 flex h-7 min-w-[1.75rem] items-center justify-center rounded-lg bg-gradient-to-br from-indigo-600 to-violet-600 px-1.5 text-[10px] font-black tabular-nums text-white shadow-lg shadow-indigo-300/40 ring-2 ring-white">
+                                {rowNumber}
+                              </span>
+                              <div
+                                className={`flex h-14 w-14 items-center justify-center rounded-2xl text-base font-black tabular-nums ring-2 ring-white transition group-hover:ring-indigo-100 ${
+                                  live
+                                    ? 'bg-gradient-to-br from-emerald-100 to-sky-100 text-emerald-900 shadow-md'
+                                    : 'bg-gradient-to-br from-slate-100 to-slate-50 text-slate-700 shadow-sm'
+                                }`}
+                              >
+                                {initial}
+                              </div>
+                            </div>
+                            <div className="min-w-0 flex-1 space-y-3">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Assignee</p>
+                                  <p className="truncate text-lg font-bold tracking-tight text-slate-900">
+                                    {assignee?.name ?? 'Member'}
+                                  </p>
+                                </div>
+                                <span
+                                  className={`shrink-0 rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-wide shadow-sm ${statusChipClass(
+                                    task.status
+                                  )}`}
+                                >
+                                  {task.status}
+                                </span>
+                              </div>
+                              <div>
+                                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Task</p>
+                                <p className="mt-0.5 text-[15px] font-semibold leading-snug text-slate-800 line-clamp-2">
+                                  {task.title}
+                                </p>
+                              </div>
+                              {submitNote ? (
+                                <div className="rounded-xl border border-indigo-100/60 bg-gradient-to-br from-slate-50/90 to-indigo-50/20 px-3.5 py-2.5">
+                                  <p className="text-[10px] font-bold uppercase tracking-widest text-indigo-600/80">
+                                    Latest submission note
+                                  </p>
+                                  <p className="mt-1 text-xs leading-relaxed text-slate-700 line-clamp-3">{submitNote}</p>
+                                </div>
+                              ) : null}
+                              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-slate-100 pt-3 text-[11px] text-slate-500">
+                                <span className="inline-flex items-center gap-1.5 font-semibold text-slate-600">
+                                  <CalendarDays className="h-3.5 w-3.5 shrink-0 text-indigo-500" aria-hidden />
+                                  Due {format(new Date(task.deadline), 'EEE, MMM d, yyyy')}
+                                </span>
+                                <span className="inline-flex items-center gap-1.5 font-mono text-[10px] font-medium text-slate-400">
+                                  <Clock className="h-3 w-3 shrink-0" aria-hidden />
+                                  {taskRefLabel(task.id)}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 flex-col gap-3 rounded-2xl bg-gradient-to-b from-slate-50/95 to-white p-4 ring-1 ring-slate-100/90 sm:w-[14rem] sm:justify-between">
+                            <TaskTotalWorkDisplay task={task} label="Total work time" className="w-full" />
+                            <Link
+                              href={`/project-manager?taskId=${encodeURIComponent(task.id)}`}
+                              className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-slate-900 to-slate-800 px-4 py-3 text-center text-sm font-bold text-white shadow-lg shadow-slate-400/25 transition hover:from-indigo-700 hover:to-indigo-900 active:scale-[0.98]"
+                            >
+                              View task
+                              <ArrowUpRight className="h-4 w-4 opacity-90" aria-hidden />
+                            </Link>
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+
+                {timerTotalPages > 1 ? (
+                  <nav
+                    className="flex flex-col items-stretch gap-4 rounded-2xl border border-slate-200/80 bg-gradient-to-b from-white to-slate-50/90 px-4 py-4 shadow-lg shadow-slate-200/40 sm:flex-row sm:items-center sm:justify-between sm:px-5"
+                    aria-label="Task list pages"
+                  >
+                    <button
+                      type="button"
+                      disabled={timerPage <= 1}
+                      onClick={() => setTimerPage((p) => Math.max(1, p - 1))}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-800 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50/50 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <ChevronLeft className="h-4 w-4" aria-hidden />
+                      Previous
+                    </button>
+
+                    <div className="flex flex-wrap items-center justify-center gap-1.5">
+                      {timerPaginationPages.map((item, i) =>
+                        item === 'gap' ? (
+                          <span
+                            key={`gap-${i}`}
+                            className="px-1.5 text-sm font-bold text-slate-300"
+                            aria-hidden
+                          >
+                            …
+                          </span>
+                        ) : (
+                          <button
+                            key={item}
+                            type="button"
+                            onClick={() => setTimerPage(item)}
+                            className={
+                              item === timerPage
+                                ? 'min-w-[2.35rem] rounded-xl bg-gradient-to-b from-indigo-600 to-indigo-700 px-2.5 py-2 text-sm font-bold text-white shadow-md shadow-indigo-300/40 ring-2 ring-indigo-200/50'
+                                : 'min-w-[2.35rem] rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-sm font-bold text-slate-700 transition hover:border-indigo-200 hover:bg-indigo-50/60'
+                            }
+                            aria-current={item === timerPage ? 'page' : undefined}
+                          >
+                            {item}
+                          </button>
+                        )
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={timerPage >= timerTotalPages}
+                      onClick={() => setTimerPage((p) => Math.min(timerTotalPages, p + 1))}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-800 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50/50 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Next
+                      <ChevronRight className="h-4 w-4" aria-hidden />
+                    </button>
+                  </nav>
+                ) : null}
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
       <section className="space-y-6">
         <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2 border-b border-slate-100 pb-3">
           <Clock className="w-5 h-5 text-blue-500" />
           Attendance
         </h2>
-        <p className="text-sm text-slate-500 -mt-2">
-          Your weekly totals and the full team log (same view as Timesheet → team scope).
-        </p>
 
-        <PersonalStats userId={currentUser.id} timesheets={timesheets} />
+        <TeamAttendanceStats memberIds={teamMembers.map((m) => m.id)} timesheets={timesheets} />
 
         <TimesheetTable
           timesheets={teamTimesheets}

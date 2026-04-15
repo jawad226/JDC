@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useStore, type Department } from '@/lib/store';
 import { Info, Camera } from 'lucide-react';
 import { MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_FILE_MB } from '@/lib/file-upload-limits';
+import { toast } from '@/lib/toast';
 
 const DEPARTMENTS: Department[] = ['Web Design', 'MERN Stack', 'Web Development', 'SEO'];
 
@@ -52,7 +53,7 @@ export default function ProfilePage() {
     const file = e.target.files?.[0];
     if (!file || !file.type.startsWith('image/')) return;
     if (file.size > MAX_UPLOAD_FILE_BYTES) {
-      alert(`Image too large (max ${MAX_UPLOAD_FILE_MB} MB).`);
+      toast(`Image too large (max ${MAX_UPLOAD_FILE_MB} MB).`, 'error');
       e.target.value = '';
       return;
     }
@@ -68,7 +69,7 @@ export default function ProfilePage() {
     const trimmedName = name.trim();
     const trimmedEmail = email.trim().toLowerCase();
     if (!trimmedName || !trimmedEmail) {
-      alert('Name and email are required.');
+      toast('Name and email are required.', 'error');
       return;
     }
     updateUser(currentUser.id, {
@@ -80,7 +81,7 @@ export default function ProfilePage() {
       department: department || undefined,
       avatar,
     });
-    alert('Profile saved.');
+    toast('Profile saved.');
   };
 
   return (

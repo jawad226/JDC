@@ -1,0 +1,980 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { format, subDays } from 'date-fns';
+import {
+  Building2,
+  CalendarDays,
+  ClipboardList,
+  Filter,
+  Layers,
+  ListChecks,
+  ScrollText,
+  Search,
+  Sparkles,
+  Users,
+  X,
+} from 'lucide-react';
+import { useStore, useShallow } from '@/lib/store';
+import type { EmployeeDailyUpdate, Role, TeamLeaderDailySummary, User } from '@/lib/store';
+import { cn } from '@/lib/utils';
+import { toast } from '@/lib/toast';
+
+/** Single-line preview for table cells; full text opens in `TextDetailModal`. */
+function oneLinePreview(s: string): string {
+  return s.replace(/\s*\n\s*/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function TextDetailModal({
+  open,
+  onClose,
+  title,
+  subtitle,
+  body,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  subtitle?: string;
+  body: string;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[200] flex items-end justify-center p-4 sm:items-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="text-detail-modal-title"
+    >
+      <button
+        type="button"
+        className="absolute inset-0 bg-slate-900/50 backdrop-blur-[1px]"
+        onClick={onClose}
+        aria-label="Close dialog"
+      />
+      <div className="relative z-10 flex max-h-[min(85vh,720px)] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-100 px-5 py-4">
+          <div className="min-w-0 pr-2">
+            <h2 id="text-detail-modal-title" className="text-base font-bold text-slate-900">
+              {title}
+            </h2>
+            {subtitle ? <p className="mt-1 text-xs text-slate-500">{subtitle}</p> : null}
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 rounded-lg p-2 text-slate-500 hover:bg-slate-100"
+            aria-label="Close"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-800">{body}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Shared TL rollup table — same data and filters for HR and Admin. */
+function TeamLeadSummariesPanel({
+  date,
+  users,
+  teamLeaderDailySummaries,
+  teams: teamRegistry,
+}: {
+  date: string;
+  users: User[];
+  teamLeaderDailySummaries: TeamLeaderDailySummary[];
+  teams: string[];
+}) {
+  const [teamFilter, setTeamFilter] = useState<string>('__all__');
+  const [summarySearch, setSummarySearch] = useState('');
+
+  const tlSummariesForDate = useMemo(() => {
+    return teamLeaderDailySummaries
+      .filter((s) => s.date === date)
+      .sort((a, b) => a.team.localeCompare(b.team));
+  }, [teamLeaderDailySummaries, date]);
+
+  const filteredTlSummaries = useMemo(() => {
+    let rows = tlSummariesForDate;
+    if (teamFilter !== '__all__') {
+      rows = rows.filter((s) => s.team === teamFilter);
+    }
+    const q = summarySearch.trim().toLowerCase();
+    if (q) {
+      rows = rows.filter(
+        (s) =>
+          s.team.toLowerCase().includes(q) ||
+          s.body.toLowerCase().includes(q) ||
+          userLabel(users.find((u) => u.id === s.authorId)).toLowerCase().includes(q)
+      );
+    }
+    return rows;
+  }, [tlSummariesForDate, teamFilter, summarySearch, users]);
+
+  const teamOptions = useMemo(() => {
+    const fromData = new Set(tlSummariesForDate.map((s) => s.team));
+    for (const t of teamRegistry) {
+      if (t?.trim()) fromData.add(t.trim());
+    }
+    return [...fromData].sort((a, b) => a.localeCompare(b));
+  }, [tlSummariesForDate, teamRegistry]);
+
+  const [detail, setDetail] = useState<{ title: string; subtitle: string; body: string } | null>(null);
+
+  return (
+    <>
+    <div>
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <h3 className="text-sm font-bold uppercase tracking-wider text-slate-500">Team lead summaries</h3>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
+            <Building2 className="h-4 w-4 text-slate-400" />
+            Team
+            <select
+              value={teamFilter}
+              onChange={(e) => setTeamFilter(e.target.value)}
+              className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm font-medium text-slate-900 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-100"
+            >
+              <option value="__all__">All teams</option>
+              {teamOptions.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="relative min-w-0 sm:w-64">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              type="search"
+              value={summarySearch}
+              onChange={(e) => setSummarySearch(e.target.value)}
+              placeholder="Search summaries…"
+              className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm focus:border-violet-300 focus:outline-none focus:ring-2 focus:ring-violet-100"
+            />
+          </div>
+        </div>
+      </div>
+
+      {filteredTlSummaries.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/50 px-6 py-12 text-center">
+          <p className="text-sm font-medium text-slate-600">No summaries match your filters for this date.</p>
+          <p className="mt-1 text-xs text-slate-400">Try another date or clear search.</p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-slate-200">
+          <table className="w-full min-w-[720px] border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                <th className="px-4 py-3">Team</th>
+                <th className="px-4 py-3">Lead</th>
+                <th className="px-4 py-3">Summary</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 bg-white">
+              {filteredTlSummaries.map((s) => {
+                const author = users.find((u) => u.id === s.authorId);
+                return (
+                  <tr
+                    key={s.id}
+                    className="cursor-pointer hover:bg-violet-50/30"
+                    onClick={() =>
+                      setDetail({
+                        title: 'Team lead summary',
+                        subtitle: `${s.team} · ${userLabel(author)}`,
+                        body: s.body,
+                      })
+                    }
+                  >
+                    <td className="whitespace-nowrap px-4 py-3 align-middle font-semibold text-slate-900">{s.team}</td>
+                    <td className="whitespace-nowrap px-4 py-3 align-middle text-slate-600">{userLabel(author)}</td>
+                    <td className="max-w-0 min-w-[140px] px-4 py-3 align-middle text-slate-700">
+                      <p className="truncate" title={oneLinePreview(s.body)}>
+                        {oneLinePreview(s.body)}
+                      </p>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+    {detail ? (
+      <TextDetailModal
+        open
+        onClose={() => setDetail(null)}
+        title={detail.title}
+        subtitle={detail.subtitle}
+        body={detail.body}
+      />
+    ) : null}
+    </>
+  );
+}
+
+function toDateInputValue(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function parseYmd(s: string): Date {
+  const [y, mo, d] = s.split('-').map(Number);
+  return new Date(y, (mo ?? 1) - 1, d ?? 1);
+}
+
+function formatHeaderDate(ymd: string): string {
+  try {
+    return format(parseYmd(ymd), 'EEEE, MMMM d, yyyy');
+  } catch {
+    return ymd;
+  }
+}
+
+/** Shown when reporting date ≠ calendar today — saves are blocked for Emp / TL / HR. */
+function SubmitTodayOnlyHint() {
+  return null;
+}
+
+const DAILY_UPDATES_ROLES: Role[] = ['Employee', 'Team Leader', 'HR', 'Admin'];
+
+function userLabel(u: User | undefined): string {
+  if (!u) return 'Unknown';
+  return u.name || u.email;
+}
+
+export default function DailyUpdatesPage() {
+  const router = useRouter();
+  const currentUser = useStore((s) => s.currentUser);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    if (currentUser.role === 'Pending User') {
+      router.replace('/pending');
+      return;
+    }
+    if (!DAILY_UPDATES_ROLES.includes(currentUser.role)) {
+      router.replace('/');
+    }
+  }, [currentUser, router]);
+
+  if (!currentUser || currentUser.role === 'Pending User') {
+    return (
+      <div className="flex min-h-[40vh] items-center justify-center text-sm text-slate-500">Loading…</div>
+    );
+  }
+
+  if (!DAILY_UPDATES_ROLES.includes(currentUser.role)) {
+    return null;
+  }
+
+  return <DailyUpdatesContent role={currentUser.role} />;
+}
+
+function DailyUpdatesContent({ role }: { role: Role }) {
+  const [date, setDate] = useState(() => toDateInputValue(new Date()));
+  const todayYmd = toDateInputValue(new Date());
+  const yesterday = toDateInputValue(subDays(new Date(), 1));
+  const canSubmitToday = date === todayYmd;
+
+  const roleLabel =
+    role === 'Employee'
+      ? 'Employee'
+      : role === 'Team Leader'
+        ? 'Team lead'
+        : role === 'HR'
+          ? 'Human resources'
+          : 'Administrator';
+
+  return (
+    <div className="min-h-full bg-[radial-gradient(ellipse_120%_80%_at_50%_-20%,rgba(99,102,241,0.08),transparent)] pb-16">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        {/* Hero header */}
+        <div className="relative overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm shadow-slate-200/40">
+          <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-indigo-500 via-violet-500 to-slate-400" />
+          <div className="px-6 py-8 sm:px-8 sm:py-10">
+            <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0 space-y-3">
+                <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-slate-600">
+                  <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+                  Reporting chain
+                </div>
+                <h1 className="flex flex-wrap items-center gap-3 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-lg shadow-indigo-500/25">
+                    <ScrollText className="h-5 w-5" aria-hidden />
+                  </span>
+                  <span>Daily updates</span>
+                </h1>
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <span className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700">
+                    View as: <span className="font-semibold text-indigo-700">{roleLabel}</span>
+                  </span>
+                </div>
+              </div>
+
+              <div className="w-full shrink-0 space-y-3 rounded-xl border border-slate-100 bg-slate-50/80 p-4 sm:max-w-sm lg:w-80">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Reporting date</p>
+                <p className="text-sm font-semibold text-slate-900">{formatHeaderDate(date)}</p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDate(todayYmd)}
+                    className={cn(
+                      'rounded-lg px-3 py-1.5 text-xs font-semibold transition',
+                      date === todayYmd
+                        ? 'bg-indigo-600 text-white shadow-sm'
+                        : 'border border-slate-200 bg-white text-slate-700 hover:border-indigo-200 hover:bg-indigo-50/50'
+                    )}
+                  >
+                    Today
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDate(yesterday)}
+                    className={cn(
+                      'rounded-lg px-3 py-1.5 text-xs font-semibold transition',
+                      date === yesterday
+                        ? 'bg-indigo-600 text-white shadow-sm'
+                        : 'border border-slate-200 bg-white text-slate-700 hover:border-indigo-200 hover:bg-indigo-50/50'
+                    )}
+                  >
+                    Yesterday
+                  </button>
+                </div>
+                <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
+                  <CalendarDays className="h-4 w-4 shrink-0 text-slate-400" />
+                  <input
+                    type="date"
+                    value={date}
+                    onChange={(e) => setDate(e.target.value)}
+                    className="min-w-0 flex-1 border-0 bg-transparent text-sm font-medium text-slate-900 outline-none focus:ring-0"
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-8 space-y-8">
+          <EmployeeSection date={date} canSubmitToday={canSubmitToday} />
+          <TeamLeaderSection date={date} canSubmitToday={canSubmitToday} />
+          <HRSection date={date} canSubmitToday={canSubmitToday} />
+          <AdminSection date={date} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ——— Employee ——— */
+
+function EmployeeSection({ date, canSubmitToday }: { date: string; canSubmitToday: boolean }) {
+  const { currentUser, employeeDailyUpdates, upsertEmployeeDailyUpdate } = useStore(
+    useShallow((s) => ({
+      currentUser: s.currentUser,
+      employeeDailyUpdates: s.employeeDailyUpdates,
+      upsertEmployeeDailyUpdate: s.upsertEmployeeDailyUpdate,
+    }))
+  );
+  const [body, setBody] = useState('');
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyPreset, setHistoryPreset] = useState<'all' | '30d' | '7d'>('30d');
+  const [historyDetail, setHistoryDetail] = useState<{ title: string; subtitle: string; body: string } | null>(null);
+
+  const mine = useMemo(() => {
+    if (!currentUser) return [];
+    return employeeDailyUpdates
+      .filter((e) => e.userId === currentUser.id)
+      .sort((a, b) => b.date.localeCompare(a.date));
+  }, [employeeDailyUpdates, currentUser]);
+
+  const filteredHistory = useMemo(() => {
+    const now = new Date();
+    const cutoff =
+      historyPreset === '7d'
+        ? subDays(now, 7)
+        : historyPreset === '30d'
+          ? subDays(now, 30)
+          : null;
+    let rows = mine;
+    if (cutoff) {
+      rows = rows.filter((r) => parseYmd(r.date) >= startOfDayLocal(cutoff));
+    }
+    const q = historySearch.trim().toLowerCase();
+    if (q) {
+      rows = rows.filter((r) => r.body.toLowerCase().includes(q) || r.date.includes(q));
+    }
+    return rows;
+  }, [mine, historyPreset, historySearch]);
+
+  useEffect(() => {
+    if (!currentUser || currentUser.role !== 'Employee') return;
+    const row = employeeDailyUpdates.find((e) => e.userId === currentUser.id && e.date === date);
+    setBody(row?.body ?? '');
+  }, [currentUser, date, employeeDailyUpdates]);
+
+  if (!currentUser || currentUser.role !== 'Employee') return null;
+
+  const onSave = () => {
+    if (!canSubmitToday) return;
+    const r = upsertEmployeeDailyUpdate({ date, body });
+    if (r.ok) toast('Saved successfully.');
+    else toast(r.error, 'error');
+  };
+
+  const hasEntryForSelectedDate = mine.some((r) => r.date === date);
+
+  return (
+    <section className="overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-sm shadow-slate-200/50">
+      <div className="border-b border-slate-100 bg-gradient-to-r from-slate-50/80 to-white px-6 py-5 sm:px-8">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3">
+            <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-100 text-indigo-700">
+              <ClipboardList className="h-5 w-5" />
+            </span>
+            <div>
+              <h2 className="text-lg font-bold text-slate-900">Your daily update</h2>
+            </div>
+          </div>
+          {hasEntryForSelectedDate && (
+            <span className="inline-flex w-fit items-center rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-100">
+              <ListChecks className="mr-1.5 h-3.5 w-3.5" />
+              Saved for {date}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="w-full min-w-0 p-6 sm:p-8">
+        <div className="w-full min-w-0 space-y-4">
+          {!canSubmitToday ? <SubmitTodayOnlyHint /> : null}
+          <label className="block w-full min-w-0">
+            <span className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">Update text</span>
+            <textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              readOnly={!canSubmitToday}
+              rows={8}
+              placeholder="Tasks completed, focus areas, blockers, tomorrow’s plan…"
+              className={cn(
+                'box-border w-full min-w-0 max-w-full resize-y rounded-xl border border-slate-200 px-4 py-3 text-sm leading-relaxed text-slate-900 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-4 focus:ring-indigo-500/10',
+                canSubmitToday ? 'bg-slate-50/50 focus:bg-white' : 'cursor-default bg-slate-100/80 text-slate-700'
+              )}
+            />
+          </label>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={onSave}
+              disabled={!canSubmitToday}
+              title={!canSubmitToday ? 'Switch reporting date to today to save' : undefined}
+              className={cn(
+                'inline-flex items-center justify-center rounded-xl px-5 py-2.5 text-sm font-semibold shadow-md transition',
+                canSubmitToday
+                  ? 'bg-slate-900 text-white hover:bg-slate-800'
+                  : 'cursor-not-allowed bg-slate-300 text-slate-500'
+              )}
+            >
+              {canSubmitToday ? `Save` : 'Today only'}
+            </button>
+          </div>
+        </div>
+
+      </div>
+      {historyDetail ? (
+        <TextDetailModal
+          open
+          onClose={() => setHistoryDetail(null)}
+          title={historyDetail.title}
+          subtitle={historyDetail.subtitle}
+          body={historyDetail.body}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function startOfDayLocal(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+/* ——— Team Leader ——— */
+
+function TeamLeaderSection({ date, canSubmitToday }: { date: string; canSubmitToday: boolean }) {
+  const { currentUser, users, employeeDailyUpdates, teamLeaderDailySummaries, upsertTeamLeaderDailySummary } =
+    useStore(
+      useShallow((s) => ({
+        currentUser: s.currentUser,
+        users: s.users,
+        employeeDailyUpdates: s.employeeDailyUpdates,
+        teamLeaderDailySummaries: s.teamLeaderDailySummaries,
+        upsertTeamLeaderDailySummary: s.upsertTeamLeaderDailySummary,
+      }))
+    );
+  const [summaryBody, setSummaryBody] = useState('');
+  const [memberSearch, setMemberSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'submitted' | 'missing'>('all');
+  const [memberDetail, setMemberDetail] = useState<{ title: string; subtitle: string; body: string } | null>(null);
+
+  const myTeam = currentUser?.team?.trim();
+
+  const teamEmployees = useMemo(() => {
+    if (!myTeam) return [];
+    return users.filter((u) => (u.team?.trim() ?? '') === myTeam && u.role === 'Employee');
+  }, [users, myTeam]);
+
+  useEffect(() => {
+    setMemberDetail(null);
+  }, [date]);
+
+  const updatesByUserId = useMemo(() => {
+    const map = new Map<string, EmployeeDailyUpdate>();
+    for (const e of employeeDailyUpdates) {
+      if (e.date === date) map.set(e.userId, e);
+    }
+    return map;
+  }, [employeeDailyUpdates, date]);
+
+  const filteredMembers = useMemo(() => {
+    let list = teamEmployees;
+    const q = memberSearch.trim().toLowerCase();
+    if (q) {
+      list = list.filter((u) => u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q));
+    }
+    if (statusFilter === 'submitted') {
+      list = list.filter((u) => updatesByUserId.has(u.id));
+    } else if (statusFilter === 'missing') {
+      list = list.filter((u) => !updatesByUserId.has(u.id));
+    }
+    return [...list].sort((a, b) => a.name.localeCompare(b.name));
+  }, [teamEmployees, memberSearch, statusFilter, updatesByUserId]);
+
+  const stats = useMemo(() => {
+    const submitted = teamEmployees.filter((u) => updatesByUserId.has(u.id)).length;
+    return { total: teamEmployees.length, submitted, missing: teamEmployees.length - submitted };
+  }, [teamEmployees, updatesByUserId]);
+
+  useEffect(() => {
+    if (!currentUser || currentUser.role !== 'Team Leader' || !myTeam) return;
+    const row = teamLeaderDailySummaries.find((s) => s.team === myTeam && s.date === date);
+    setSummaryBody(row?.body ?? '');
+  }, [currentUser, date, myTeam, teamLeaderDailySummaries]);
+
+  if (!currentUser || currentUser.role !== 'Team Leader') return null;
+
+  if (!myTeam) {
+    return (
+      <section className="rounded-2xl border border-amber-200/80 bg-amber-50/60 p-8 shadow-sm">
+        <div className="flex gap-4">
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
+            <Users className="h-6 w-6" />
+          </span>
+          <div>
+            <h2 className="text-lg font-bold text-amber-950">No team assigned</h2>
+            <p className="mt-1 text-sm text-amber-900/90">
+              Ask HR or an administrator to place you on a team roster before you can review member updates.
+            </p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  const onSaveSummary = () => {
+    if (!canSubmitToday) return;
+    const r = upsertTeamLeaderDailySummary({ date, body: summaryBody });
+    if (r.ok) toast('Team summary saved.');
+    else toast(r.error, 'error');
+  };
+
+  return (
+    <section className="overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-sm shadow-slate-200/50">
+      <div className="border-b border-slate-100 bg-gradient-to-r from-indigo-50/50 to-white px-6 py-5 sm:px-8">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex items-start gap-3">
+            <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-600 text-white shadow-md shadow-indigo-500/20">
+              <Users className="h-5 w-5" />
+            </span>
+            <div>
+              <h2 className="text-lg font-bold text-slate-900">Employees Data</h2>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <StatPill label="Members" value={stats.total} />
+            <StatPill label="Submitted" value={stats.submitted} variant="ok" />
+            <StatPill label="Missing" value={stats.missing} variant={stats.missing > 0 ? 'warn' : 'muted'} />
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-6 p-6 sm:p-8">
+        <div className="flex flex-col gap-3 rounded-xl border border-slate-100 bg-slate-50/50 p-4 sm:flex-row sm:items-center">
+          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+            <Filter className="h-4 w-4" />
+            Filters
+          </div>
+          <div className="relative min-w-0 flex-1 sm:max-w-xs">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              type="search"
+              value={memberSearch}
+              onChange={(e) => setMemberSearch(e.target.value)}
+              placeholder="Search by name or email…"
+              className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm focus:border-indigo-300 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+            />
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {(
+              [
+                ['all', 'All'],
+                ['submitted', 'Has update'],
+                ['missing', 'Missing only'],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setStatusFilter(key)}
+                className={cn(
+                  'rounded-lg px-3 py-1.5 text-xs font-semibold transition',
+                  statusFilter === key
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'border border-slate-200 bg-white text-slate-700 hover:border-indigo-200'
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {teamEmployees.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50/50 px-6 py-10 text-center text-sm text-slate-500">
+            No employees on this team yet.
+          </p>
+        ) : (
+          <div className="overflow-x-auto rounded-xl border border-slate-200">
+            <table
+              key={`tl-emp-${date}`}
+              className="w-full min-w-[640px] border-collapse text-left text-sm"
+            >
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                  <th className="px-4 py-3">Member</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Update</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 bg-white">
+                {filteredMembers.map((emp) => {
+                  const upd = updatesByUserId.get(emp.id);
+                  return (
+                    <tr
+                      key={`${date}-${emp.id}`}
+                      className={cn('hover:bg-slate-50/80', upd && 'cursor-pointer')}
+                      onClick={() => {
+                        if (!upd) return;
+                        setMemberDetail({
+                          title: emp.name,
+                          subtitle: `${date} · ${emp.email}`,
+                          body: upd.body,
+                        });
+                      }}
+                    >
+                      <td className="px-4 py-3 align-middle">
+                        <p className="font-semibold text-slate-900">{emp.name}</p>
+                        <p className="text-xs text-slate-500">{emp.email}</p>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 align-middle">
+                        {upd ? (
+                          <span className="inline-flex rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-100">
+                            Submitted
+                          </span>
+                        ) : (
+                          <span className="inline-flex rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-900 ring-1 ring-amber-100">
+                            Missing
+                          </span>
+                        )}
+                      </td>
+                      <td className="max-w-0 min-w-[120px] px-4 py-3 align-middle text-slate-700">
+                        {upd ? (
+                          <p className="truncate" title={oneLinePreview(upd.body)}>
+                            {oneLinePreview(upd.body)}
+                          </p>
+                        ) : (
+                          <span className="text-sm italic text-slate-400">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div className="rounded-xl border border-indigo-100 bg-gradient-to-br from-indigo-50/80 to-white p-6">
+          <h3 className="text-sm font-bold text-slate-900">Team summary for HR</h3>
+          {!canSubmitToday ? <div className="mt-3"><SubmitTodayOnlyHint /></div> : null}
+          <textarea
+            value={summaryBody}
+            onChange={(e) => setSummaryBody(e.target.value)}
+            readOnly={!canSubmitToday}
+            rows={5}
+            placeholder="Roll up themes, risks, and wins for HR…"
+            className={cn(
+              'mt-4 w-full resize-y rounded-xl border border-indigo-100 px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-4 focus:ring-indigo-500/10',
+              canSubmitToday ? 'bg-white' : 'cursor-default bg-slate-100/80'
+            )}
+          />
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={onSaveSummary}
+              disabled={!canSubmitToday}
+              title={!canSubmitToday ? 'Switch reporting date to today to save' : undefined}
+              className={cn(
+                'rounded-xl px-5 py-2.5 text-sm font-semibold shadow-md transition',
+                canSubmitToday
+                  ? 'bg-indigo-600 text-white hover:bg-indigo-500'
+                  : 'cursor-not-allowed bg-slate-300 text-slate-500'
+              )}
+            >
+              {canSubmitToday ? 'Save team summary' : 'Save team summary (today only)'}
+            </button>
+          </div>
+        </div>
+      </div>
+      {memberDetail ? (
+        <TextDetailModal
+          open
+          onClose={() => setMemberDetail(null)}
+          title={memberDetail.title}
+          subtitle={memberDetail.subtitle}
+          body={memberDetail.body}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function StatPill({
+  label,
+  value,
+  variant = 'default',
+}: {
+  label: string;
+  value: number;
+  variant?: 'default' | 'ok' | 'warn' | 'muted';
+}) {
+  const styles = {
+    default: 'border-slate-200 bg-white text-slate-800',
+    ok: 'border-emerald-200 bg-emerald-50 text-emerald-900',
+    warn: 'border-amber-200 bg-amber-50 text-amber-950',
+    muted: 'border-slate-200 bg-slate-100 text-slate-600',
+  };
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-semibold shadow-sm',
+        styles[variant]
+      )}
+    >
+      {label}
+      <span className="tabular-nums text-[13px]">{value}</span>
+    </span>
+  );
+}
+
+/* ——— HR ——— */
+
+function HRSection({ date, canSubmitToday }: { date: string; canSubmitToday: boolean }) {
+  const {
+    currentUser,
+    users,
+    teamLeaderDailySummaries,
+    hrDailySummaries,
+    upsertHRDailySummary,
+    teams: teamRegistry,
+  } = useStore(
+    useShallow((s) => ({
+      currentUser: s.currentUser,
+      users: s.users,
+      teamLeaderDailySummaries: s.teamLeaderDailySummaries,
+      hrDailySummaries: s.hrDailySummaries,
+      upsertHRDailySummary: s.upsertHRDailySummary,
+      teams: s.teams,
+    }))
+  );
+  const [hrBody, setHrBody] = useState('');
+
+  useEffect(() => {
+    if (!currentUser || currentUser.role !== 'HR') return;
+    const row = hrDailySummaries.find((s) => s.date === date);
+    setHrBody(row?.body ?? '');
+  }, [currentUser, date, hrDailySummaries]);
+
+  if (!currentUser || currentUser.role !== 'HR') return null;
+
+  const onSaveHr = () => {
+    if (!canSubmitToday) return;
+    const r = upsertHRDailySummary({ date, body: hrBody });
+    if (r.ok) toast('Saved.');
+    else toast(r.error, 'error');
+  };
+
+  return (
+    <section className="overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-sm shadow-slate-200/50">
+      <div className="space-y-8 p-6 sm:p-8">
+        <TeamLeadSummariesPanel
+          date={date}
+          users={users}
+          teamLeaderDailySummaries={teamLeaderDailySummaries}
+          teams={teamRegistry}
+        />
+
+        <div className="rounded-xl border border-violet-200 bg-gradient-to-br from-violet-50/60 to-white p-6">
+          <h3 className="text-sm font-bold text-slate-900">HR note for leadership</h3>
+          {!canSubmitToday ? <div className="mt-3"><SubmitTodayOnlyHint /></div> : null}
+          <textarea
+            value={hrBody}
+            onChange={(e) => setHrBody(e.target.value)}
+            readOnly={!canSubmitToday}
+            rows={5}
+            placeholder="Organization-level narrative for leadership…"
+            className={cn(
+              'mt-4 w-full resize-y rounded-xl border border-violet-100 px-4 py-3 text-sm focus:border-violet-400 focus:outline-none focus:ring-4 focus:ring-violet-500/10',
+              canSubmitToday ? 'bg-white' : 'cursor-default bg-slate-100/80'
+            )}
+          />
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={onSaveHr}
+              disabled={!canSubmitToday}
+              title={!canSubmitToday ? 'Switch reporting date to today to save' : undefined}
+              className={cn(
+                'rounded-xl px-5 py-2.5 text-sm font-semibold shadow-md transition',
+                canSubmitToday
+                  ? 'bg-violet-600 text-white hover:bg-violet-500'
+                  : 'cursor-not-allowed bg-slate-300 text-slate-500'
+              )}
+            >
+              {canSubmitToday ? 'Save' : 'Today only'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ——— Admin ——— */
+
+function AdminSection({ date }: { date: string }) {
+  const { currentUser, users, hrDailySummaries, teamLeaderDailySummaries, teams: teamRegistry } = useStore(
+    useShallow((s) => ({
+      currentUser: s.currentUser,
+      users: s.users,
+      hrDailySummaries: s.hrDailySummaries,
+      teamLeaderDailySummaries: s.teamLeaderDailySummaries,
+      teams: s.teams,
+    }))
+  );
+
+  const hrNote = hrDailySummaries.find((s) => s.date === date);
+  const hrAuthor = hrNote ? users.find((u) => u.id === hrNote.authorId) : undefined;
+
+  const teamsSorted = useMemo(() => {
+    const set = new Set<string>();
+    for (const u of users) {
+      if (u.team?.trim()) set.add(u.team.trim());
+    }
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [users]);
+
+  const adminStats = useMemo(() => {
+    const tlCount = teamLeaderDailySummaries.filter((s) => s.date === date).length;
+    return { teams: teamsSorted.length, tlSummaries: tlCount };
+  }, [teamsSorted.length, teamLeaderDailySummaries, date]);
+
+  const [hrNoteModalOpen, setHrNoteModalOpen] = useState(false);
+
+  if (!currentUser || currentUser.role !== 'Admin') return null;
+
+  return (
+    <section className="overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-sm shadow-slate-200/50">
+      <div className="border-b border-slate-100 bg-gradient-to-r from-slate-100/80 to-white px-6 py-5 sm:px-8">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-3">
+            <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-900 text-white shadow-md">
+              <ScrollText className="h-5 w-5" />
+            </span>
+            <div>
+              <h2 className="text-lg font-bold text-slate-900">Admin</h2>            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <StatPill label="Teams" value={adminStats.teams} />
+            <StatPill label="TL summaries (this date)" value={adminStats.tlSummaries} variant="ok" />
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-8 p-6 sm:p-8">
+        <TeamLeadSummariesPanel
+          date={date}
+          users={users}
+          teamLeaderDailySummaries={teamLeaderDailySummaries}
+          teams={teamRegistry}
+        />
+
+        <div className="rounded-xl border border-violet-200 bg-gradient-to-br from-violet-50/60 to-white p-6">
+          <h3 className="text-sm font-bold text-slate-900">HR note for leadership</h3>
+          <button
+            type="button"
+            disabled={!hrNote}
+            onClick={() => hrNote && setHrNoteModalOpen(true)}
+            className={cn(
+              'mt-4 w-full rounded-xl border border-violet-100 bg-white px-4 py-3 text-left text-sm text-slate-800 transition',
+              hrNote ? 'cursor-pointer hover:bg-violet-50/50' : 'cursor-default'
+            )}
+          >
+            {hrNote ? (
+              <p className="truncate">{oneLinePreview(hrNote.body)}</p>
+            ) : (
+              <p className="italic text-slate-400">No HR note has been saved for this date.</p>
+            )}
+          </button>
+          <p className="mt-2 text-[11px] text-slate-500">Click to read the full message.</p>
+        </div>
+      </div>
+      {hrNote ? (
+        <TextDetailModal
+          open={hrNoteModalOpen}
+          onClose={() => setHrNoteModalOpen(false)}
+          title="HR note for leadership"
+          subtitle={`${userLabel(hrAuthor)} · ${date}`}
+          body={hrNote.body}
+        />
+      ) : null}
+    </section>
+  );
+}

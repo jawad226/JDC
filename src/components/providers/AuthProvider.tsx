@@ -1,5 +1,6 @@
 'use client';
 
+import { ToastViewport } from '@/components/ToastViewport';
 import { useStore } from '@/lib/store';
 import { useRouter, usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
@@ -49,5 +50,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return null;
   }
 
-  return <>{children}</>;
+  return (
+    <>
+      <ToastViewport />
+      {children}
+    </>
+  );
 }

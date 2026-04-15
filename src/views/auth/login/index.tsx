@@ -44,7 +44,7 @@ export default function SignInView() {
 
   return (
     <AuthShell title="Sign in">
-      <AuthAlerts error={error} success={success} />
+      <AuthAlerts error={error} success={success} onDismiss={() => { setError(null); setSuccess(null); }} />
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Email</label>

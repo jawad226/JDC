@@ -1,0 +1,350 @@
+'use client';
+
+import { useMemo, useState } from 'react';
+import { format } from 'date-fns';
+import { useStore, useShallow } from '@/lib/store';
+import { ABSENT_AFTER_MINUTES, LATE_AFTER_MINUTES } from '@/lib/attendanceRules';
+import { cn } from '@/lib/utils';
+import { Timer, CalendarClock, MapPin } from 'lucide-react';
+import { toast } from '@/lib/toast';
+
+function todayDateInput(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/** OFF: light grey track + dark knob (left). ON: green track + white knob + shadow (right). */
+function PolicyToggle({
+  checked,
+  onCheckedChange,
+  'aria-label': ariaLabel,
+}: {
+  checked: boolean;
+  onCheckedChange: (next: boolean) => void;
+  'aria-label'?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      onClick={() => onCheckedChange(!checked)}
+      className={cn(
+        'flex h-8 w-[3.25rem] shrink-0 items-center rounded-full p-[3px] transition-colors duration-200',
+        'focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2',
+        checked ? 'justify-end bg-emerald-500' : 'justify-start bg-slate-200'
+      )}
+    >
+      <span
+        className={cn(
+          'pointer-events-none h-[1.625rem] w-[1.625rem] shrink-0 rounded-full transition-[background-color,box-shadow] duration-200',
+          checked ? 'bg-white shadow-md' : 'bg-slate-700 shadow-none'
+        )}
+      />
+    </button>
+  );
+}
+
+export function TimeControlPage() {
+  const {
+    sites,
+    attendanceDayOverrides,
+    setAttendanceDayOverride,
+    clearAttendanceDayOverride,
+    adhocShiftsEnabled,
+    geoFencingEnabled,
+    geoFencingUseGlobalRadius,
+    geoFencingGlobalRadiusMiles,
+    geoFencingSiteRadiusMiles,
+    geoFencingOfficeLat,
+    geoFencingOfficeLng,
+    patchAttendanceControlSettings,
+  } = useStore(
+    useShallow((s) => ({
+      sites: s.sites,
+      attendanceDayOverrides: s.attendanceDayOverrides,
+      setAttendanceDayOverride: s.setAttendanceDayOverride,
+      clearAttendanceDayOverride: s.clearAttendanceDayOverride,
+      adhocShiftsEnabled: s.adhocShiftsEnabled,
+      geoFencingEnabled: s.geoFencingEnabled,
+      geoFencingUseGlobalRadius: s.geoFencingUseGlobalRadius,
+      geoFencingGlobalRadiusMiles: s.geoFencingGlobalRadiusMiles,
+      geoFencingSiteRadiusMiles: s.geoFencingSiteRadiusMiles,
+      geoFencingOfficeLat: s.geoFencingOfficeLat,
+      geoFencingOfficeLng: s.geoFencingOfficeLng,
+      patchAttendanceControlSettings: s.patchAttendanceControlSettings,
+    }))
+  );
+
+  const [companyDay, setCompanyDay] = useState(todayDateInput());
+  const [companyStartTime, setCompanyStartTime] = useState('09:00');
+
+  const overrideList = useMemo(() => {
+    return Object.entries(attendanceDayOverrides)
+      .map(([date, { hour, minute }]) => ({
+        date,
+        hour,
+        minute,
+        label: `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`,
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }, [attendanceDayOverrides]);
+
+  const saveCompanyStart = () => {
+    const [h, m] = companyStartTime.split(':').map((x) => parseInt(x, 10));
+    if (Number.isNaN(h) || Number.isNaN(m)) {
+      toast('Enter a valid office start time.', 'error');
+      return;
+    }
+    setAttendanceDayOverride(companyDay, h, m);
+  };
+
+  return (
+    <div className="mx-auto min-h-full max-w-6xl space-y-8 pb-12">
+      <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-gradient-to-br from-white via-slate-50/50 to-amber-50/20 p-8 shadow-sm">
+        <h1 className="flex items-center gap-3 text-3xl font-light tracking-tight text-slate-800">
+          <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-500 text-white shadow-lg shadow-amber-200/50">
+            <Timer className="h-7 w-7" />
+          </span>
+          Time control
+        </h1>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border border-indigo-200/80 bg-gradient-to-br from-indigo-50/40 to-white p-6 shadow-sm">
+        <div className="flex flex-wrap items-start gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-md">
+            <CalendarClock className="h-5 w-5" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-base font-semibold text-slate-900">Company office start by date (all staff)</h2>
+
+          </div>
+        </div>
+        <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
+          <div>
+            <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-400">Date</label>
+            <input
+              type="date"
+              value={companyDay}
+              onChange={(e) => setCompanyDay(e.target.value)}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-400">
+              Office start
+            </label>
+            <input
+              type="time"
+              value={companyStartTime}
+              onChange={(e) => setCompanyStartTime(e.target.value)}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={saveCompanyStart}
+            className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-700"
+          >
+            Apply for this day
+          </button>
+        </div>
+        {overrideList.length > 0 && (
+          <ul className="mt-5 space-y-2 border-t border-indigo-100 pt-4 text-sm">
+            {overrideList.map((row) => {
+              const d = new Date(row.date + 'T12:00:00');
+              const dayStart = new Date(row.date + 'T00:00:00');
+              const officeStart = new Date(dayStart);
+              officeStart.setHours(row.hour, row.minute, 0, 0);
+              const lateAt = new Date(officeStart.getTime() + LATE_AFTER_MINUTES * 60 * 1000);
+              const absentAt = new Date(officeStart.getTime() + ABSENT_AFTER_MINUTES * 60 * 1000);
+              return (
+                <li
+                  key={row.date}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-100 bg-white/80 px-3 py-2"
+                >
+                  <span className="font-medium text-slate-800">
+                    {format(d, 'EEE, MMM d, yyyy')}: start{' '}
+                    <span className="tabular-nums">{row.label}</span>
+                    <span className="ml-2 text-xs font-normal text-slate-500">
+                      (late from {format(lateAt, 'HH:mm')}, absent after {format(absentAt, 'HH:mm')})
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => clearAttendanceDayOverride(row.date)}
+                    className="text-xs font-semibold text-rose-600 hover:text-rose-800"
+                  >
+                    Remove
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      {/* Enable Ad-Hoc Shifts — when off, dashboard Clock In is disabled for all non-Admin roles */}
+      <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="min-w-0 max-w-xl">
+          <h2 className="text-base font-semibold text-slate-900">Enable Shifts</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            When turned off, employees (and HR / Team Leader) cannot use the live Clock In button on the dashboard.
+          </p>
+        </div>
+        <PolicyToggle
+          checked={adhocShiftsEnabled}
+          onCheckedChange={(next) => patchAttendanceControlSettings({ adhocShiftsEnabled: next })}
+          aria-label="Enable ad-hoc shifts"
+        />
+      </div>
+
+      {/* Geo-Fencing */}
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 max-w-xl">
+            <h2 className="text-base font-semibold text-slate-900">Geo-Fencing</h2>
+            <p className="mt-1 text-sm text-slate-600">
+              Restrict clock-ins to within a radius of the office anchor. Requires browser location permission when
+              employees clock in.
+            </p>
+          </div>
+          <PolicyToggle
+            checked={geoFencingEnabled}
+            onCheckedChange={(next) => patchAttendanceControlSettings({ geoFencingEnabled: next })}
+            aria-label="Enable geo-fencing"
+          />
+        </div>
+
+        {geoFencingEnabled && (
+          <div className="mt-6 space-y-6 border-t border-slate-100 pt-6">
+            <fieldset className="space-y-3">
+              <legend className="sr-only">Radius mode</legend>
+              <label className="flex cursor-pointer items-start gap-3">
+                <input
+                  type="radio"
+                  name="geo-radius-mode"
+                  checked={geoFencingUseGlobalRadius}
+                  onChange={() => patchAttendanceControlSettings({ geoFencingUseGlobalRadius: true })}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="block text-sm font-semibold text-slate-800">Use radius as global</span>
+                  <span className="mt-2 flex items-center gap-2 text-sm text-slate-600">
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.1}
+                      disabled={!geoFencingUseGlobalRadius}
+                      value={geoFencingGlobalRadiusMiles}
+                      onChange={(e) =>
+                        patchAttendanceControlSettings({
+                          geoFencingGlobalRadiusMiles: Math.max(0, parseFloat(e.target.value) || 0),
+                        })
+                      }
+                      className="w-24 rounded-lg border border-slate-200 px-2 py-1.5 disabled:opacity-50"
+                    />
+                    miles
+                  </span>
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-3">
+                <input
+                  type="radio"
+                  name="geo-radius-mode"
+                  checked={!geoFencingUseGlobalRadius}
+                  onChange={() => patchAttendanceControlSettings({ geoFencingUseGlobalRadius: false })}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="block text-sm font-semibold text-slate-800">Set custom radius per site</span>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Uses each user&apos;s work site; falls back to global miles if a site has no value.
+                  </p>
+                </span>
+              </label>
+            </fieldset>
+
+            {!geoFencingUseGlobalRadius && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                {sites.map((site) => (
+                  <div key={site} className="flex items-center gap-2 text-sm">
+                    <span className="min-w-0 flex-1 truncate font-medium text-slate-700">{site}</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.1}
+                      value={geoFencingSiteRadiusMiles[site] ?? 0}
+                      onChange={(e) =>
+                        patchAttendanceControlSettings({
+                          geoFencingSiteRadiusMiles: {
+                            [site]: Math.max(0, parseFloat(e.target.value) || 0),
+                          },
+                        })
+                      }
+                      className="w-20 rounded-lg border border-slate-200 px-2 py-1.5"
+                    />
+                    <span className="text-slate-500">mi</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="rounded-xl border border-slate-100 bg-slate-50/80 p-4">
+              <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-800">
+                <MapPin className="h-4 w-4 text-blue-600" />
+                Office anchor (latitude / longitude)
+              </div>
+              <p className="mb-3 text-xs text-slate-500">
+                Required when geo-fencing is on and radius &gt; 0. Distance is measured from this point to the
+                employee&apos;s device when they tap Clock In.
+              </p>
+              <div className="flex flex-wrap gap-3">
+                <label className="text-xs font-semibold text-slate-600">
+                  Latitude
+                  <input
+                    type="number"
+                    step="any"
+                    placeholder="e.g. 31.52"
+                    value={geoFencingOfficeLat == null ? '' : geoFencingOfficeLat}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === '') patchAttendanceControlSettings({ geoFencingOfficeLat: null });
+                      else {
+                        const n = parseFloat(v);
+                        if (Number.isFinite(n)) patchAttendanceControlSettings({ geoFencingOfficeLat: n });
+                      }
+                    }}
+                    className="mt-1 block w-36 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm"
+                  />
+                </label>
+                <label className="text-xs font-semibold text-slate-600">
+                  Longitude
+                  <input
+                    type="number"
+                    step="any"
+                    placeholder="e.g. 74.35"
+                    value={geoFencingOfficeLng == null ? '' : geoFencingOfficeLng}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === '') patchAttendanceControlSettings({ geoFencingOfficeLng: null });
+                      else {
+                        const n = parseFloat(v);
+                        if (Number.isFinite(n)) patchAttendanceControlSettings({ geoFencingOfficeLng: n });
+                      }
+                    }}
+                    className="mt-1 block w-36 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm"
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

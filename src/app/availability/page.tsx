@@ -136,10 +136,9 @@ function AdminAvailabilityBoard() {
 
   return (
     <div className="max-w-6xl mx-auto space-y-8 pb-12">
-      <div className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between border-b border-slate-200/80 pb-6">
+      <div className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between pb-6">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">Team Status Board</h1>
-          <p className="text-slate-500 mt-1 text-sm max-w-xl">Availability and work activity across roles.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-slate-500">
           <Filter className="w-4 h-4 shrink-0" aria-hidden />
@@ -454,9 +453,8 @@ function EmployeeAvailabilityView() {
 
   return (
     <div className="max-w-4xl mx-auto w-full space-y-8 pb-12 px-4 sm:px-6">
-      <header className="border-b border-slate-200/80 pb-6">
+      <header className="">
         <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">My availability</h1>
-        <p className="text-slate-500 mt-1 text-sm">Set how reachable you are and review your attendance for any date range.</p>
       </header>
 
       <section className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200/80 shadow-sm">
@@ -464,8 +462,6 @@ function EmployeeAvailabilityView() {
           <Activity className="w-5 h-5 text-emerald-500 shrink-0" />
           Current status
         </h2>
-        <p className="text-xs text-slate-500 mb-6">What others see before they message you.</p>
-
         {activeEntry && (
           <div className="mb-6 rounded-2xl border border-slate-100 bg-gradient-to-r from-slate-50 to-white p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div className="min-w-0">
@@ -517,15 +513,6 @@ function EmployeeAvailabilityView() {
         </div>
       </section>
 
-      <div className="rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50/80 to-indigo-50/40 p-5 sm:p-6 flex gap-4">
-        <div className="shrink-0 w-10 h-10 rounded-xl bg-white/80 border border-blue-100 flex items-center justify-center">
-          <AlertCircle className="w-5 h-5 text-blue-600" />
-        </div>
-        <p className="text-sm text-slate-700 leading-relaxed">
-          Keep this updated so your team knows when you are reachable. Hours below come from check-in, check-out, and breaks.
-        </p>
-      </div>
-
       <section className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
         <div className="p-6 sm:p-8 border-b border-slate-100 bg-slate-50/50">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -534,7 +521,6 @@ function EmployeeAvailabilityView() {
                 <CalendarClock className="w-5 h-5 text-indigo-500 shrink-0" />
                 Attendance log
               </h2>
-              <p className="text-xs text-slate-500 mt-1">Use the dates below or jump to last month — newest days appear first.</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button

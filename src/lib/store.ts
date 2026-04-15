@@ -18,6 +18,7 @@ import {
 } from '@/lib/messaging';
 import { emitChatSocketEvent } from '@/lib/chat-socket';
 import { MAX_UPLOAD_FILE_BYTES } from '@/lib/file-upload-limits';
+import { clockInBlockedBeforeOfficeStart, isClockInLate } from '@/lib/attendanceRules';
 
 const initialChatThreads = createDefaultChatThreads();
 
@@ -105,6 +106,10 @@ export interface PasswordResetToken {
   email: string;
   token: string;
   expiresAt: string;
+  /** 6-digit code (demo: shown in UI; production would be emailed). */
+  otp: string;
+  /** Must be true before `resetPasswordWithToken` accepts the token. */
+  otpVerified: boolean;
 }
 
 export interface TimesheetEntry {
@@ -213,6 +218,37 @@ export interface ManualTimeRequest {
   feedback?: string;
 }
 
+/** Personal daily note (Employee); one row per user per calendar day. */
+export interface EmployeeDailyUpdate {
+  id: string;
+  userId: string;
+  date: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** TL rollup for a team + day (visible to HR). */
+export interface TeamLeaderDailySummary {
+  id: string;
+  team: string;
+  date: string;
+  authorId: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** HR org-level note for a day (visible to Admin). */
+export interface HRDailySummary {
+  id: string;
+  date: string;
+  authorId: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface DayAvailability {
   day: string;
   startTime: string;
@@ -247,12 +283,18 @@ interface AppState {
   tasks: Task[];
   Leave: LeaveRequest[];
   manualTimeRequests: ManualTimeRequest[];
+  employeeDailyUpdates: EmployeeDailyUpdate[];
+  teamLeaderDailySummaries: TeamLeaderDailySummary[];
+  hrDailySummaries: HRDailySummary[];
+  upsertEmployeeDailyUpdate: (input: { date: string; body: string }) => { ok: true } | { ok: false; error: string };
+  upsertTeamLeaderDailySummary: (input: { date: string; body: string }) => { ok: true } | { ok: false; error: string };
+  upsertHRDailySummary: (input: { date: string; body: string }) => { ok: true } | { ok: false; error: string };
   setCurrentUser: (user: User | null) => void;
   clockIn: () => void;
   clockOut: () => void;
   startBreak: () => void;
   endBreak: () => void;
-  // HR manual attendance record creation (creates a finalized entry with clockOut + breaks).
+  // Admin / HR: manual attendance record (finalized entry; recalculates hours / late / OT).
   addManualTimesheetEntry: (input: {
     userId: string;
     date: string; // YYYY-MM-DD
@@ -260,6 +302,37 @@ interface AppState {
     clockOutTime: string; // HH:mm
     breakInTime?: string; // HH:mm
     breakOutTime?: string; // HH:mm
+  }) => void;
+  /** Admin / HR: edit an existing row; times and totals recalculated from clock in/out and break. */
+  updateTimesheetEntryTimes: (input: {
+    entryId: string;
+    userId: string;
+    date: string;
+    clockInTime: string;
+    clockOutTime: string;
+    breakInTime?: string;
+    breakOutTime?: string;
+  }) => void;
+  /** Per calendar day (YYYY-MM-DD): company office start for all staff (late/absent from this time). Admin only. */
+  attendanceDayOverrides: Record<string, { hour: number; minute: number }>;
+  setAttendanceDayOverride: (date: string, hour: number, minute: number) => void;
+  clearAttendanceDayOverride: (date: string) => void;
+  /** When false, non-Admin users cannot use live Clock In (dashboard). Admin-only toggle in Time control. */
+  adhocShiftsEnabled: boolean;
+  geoFencingEnabled: boolean;
+  geoFencingUseGlobalRadius: boolean;
+  geoFencingGlobalRadiusMiles: number;
+  geoFencingSiteRadiusMiles: Record<string, number>;
+  geoFencingOfficeLat: number | null;
+  geoFencingOfficeLng: number | null;
+  patchAttendanceControlSettings: (patch: {
+    adhocShiftsEnabled?: boolean;
+    geoFencingEnabled?: boolean;
+    geoFencingUseGlobalRadius?: boolean;
+    geoFencingGlobalRadiusMiles?: number;
+    geoFencingSiteRadiusMiles?: Record<string, number>;
+    geoFencingOfficeLat?: number | null;
+    geoFencingOfficeLng?: number | null;
   }) => void;
   // Admin actions
   addUser: (user: User) => void;
@@ -274,7 +347,7 @@ interface AppState {
   /** HR only: assign project from Admin to a Team Leader (senior). */
   forwardTaskToTeamLeader: (taskId: string, teamLeaderId: string) => void;
   startTaskWork: (taskId: string) => void;
-  submitTask: (taskId: string) => void;
+  submitTask: (taskId: string, submissionNote: string) => void;
   /** HR/TL: move a submitted task into the Review step before final approval. */
   moveTaskToReview: (taskId: string) => void;
   approveTask: (taskId: string) => void;
@@ -348,7 +421,10 @@ interface AppState {
     | { ok: true; user: User }
     | { ok: false; error: string };
   requestPasswordReset: (email: string) =>
-    | { ok: true; token: string; expiresAt: string }
+    | { ok: true; demoOtp: string }
+    | { ok: false; error: string };
+  verifyPasswordResetOtp: (email: string, otp: string) =>
+    | { ok: true; token: string }
     | { ok: false; error: string };
   resetPasswordWithToken: (token: string, newPassword: string) =>
     | { ok: true }
@@ -397,13 +473,14 @@ interface AppState {
   ) => { ok: true } | { ok: false; error?: string };
 }
 
-const mockUsers: User[] = [
+/** Baseline roster for demos; merged with persisted `users` on Admin directory. */
+export const DEMO_USER_SEED: User[] = [
   {
     id: '1',
     name: 'Rameez Hasan',
     role: 'Employee',
     email: 'rameez@example.com',
-    team: 'Development',
+    team: undefined,
     department: 'MERN Stack',
     status: 'Available',
     phone: '+92 300 1234567',
@@ -417,7 +494,7 @@ const mockUsers: User[] = [
     name: 'Admin User',
     role: 'Admin',
     email: 'admin@example.com',
-    team: 'Management',
+    team: undefined,
     department: 'Web Development',
     status: 'Available',
     phone: '+92 300 0000001',
@@ -429,9 +506,9 @@ const mockUsers: User[] = [
   {
     id: '3',
     name: 'HR Manager',
-    role: 'HR',
+    role: 'Employee',
     email: 'hr@example.com',
-    team: 'HR',
+    team: undefined,
     department: 'Web Development',
     status: 'Available',
     phone: '+92 300 0000002',
@@ -443,9 +520,9 @@ const mockUsers: User[] = [
   {
     id: '4',
     name: 'Sarah Khan',
-    role: 'Team Leader',
+    role: 'Employee',
     email: 'sarah@example.com',
-    team: 'Development',
+    team: undefined,
     department: 'MERN Stack',
     status: 'Available',
     phone: '+92 300 0000003',
@@ -459,7 +536,7 @@ const mockUsers: User[] = [
     name: 'Ali Ahmed',
     role: 'Employee',
     email: 'ali@example.com',
-    team: 'Design',
+    team: undefined,
     department: 'Web Design',
     status: 'Available',
     phone: '+92 300 0000004',
@@ -478,7 +555,128 @@ const mockUsers: User[] = [
     phone: '+92 300 0000005',
     password: 'pending123',
   },
+  {
+    id: '7',
+    name: 'Bilal Qureshi',
+    role: 'Employee',
+    email: 'bilal@example.com',
+    team: undefined,
+    department: 'Web Development',
+    status: 'Available',
+    phone: '+92 321 5550101',
+    cnic: '35202-1111222-3',
+    address: 'Johar Town, Lahore',
+    employeeCode: 'GDC-EMP-003',
+    password: 'bilal123',
+  },
+  {
+    id: '8',
+    name: 'Ayesha Noor',
+    role: 'Employee',
+    email: 'ayesha@example.com',
+    team: undefined,
+    department: 'Web Design',
+    status: 'Unavailable',
+    phone: '+92 333 5550102',
+    cnic: '42201-2222333-4',
+    address: 'Clifton Block 2, Karachi',
+    employeeCode: 'GDC-EMP-004',
+    password: 'ayesha123',
+  },
+  {
+    id: '9',
+    name: 'Omar Siddiqui',
+    role: 'Employee',
+    email: 'omar@example.com',
+    team: undefined,
+    department: 'SEO',
+    status: 'Available',
+    phone: '+92 345 5550103',
+    cnic: '42101-3333444-5',
+    address: 'F-7 Markaz, Islamabad',
+    employeeCode: 'GDC-TL-002',
+    password: 'omar123',
+  },
+  {
+    id: '10',
+    name: 'Fatima Malik',
+    role: 'Employee',
+    email: 'fatima@example.com',
+    team: undefined,
+    department: 'SEO',
+    status: 'Available',
+    phone: '+92 300 5550104',
+    cnic: '35202-4444555-6',
+    address: 'Satellite Town, Rawalpindi',
+    employeeCode: 'GDC-EMP-005',
+    password: 'fatima123',
+  },
+  {
+    id: '11',
+    name: 'Hassan Raza',
+    role: 'Pending User',
+    email: 'hassan.pending@example.com',
+    team: undefined,
+    status: undefined,
+    phone: '+92 302 5550105',
+    department: 'MERN Stack',
+    password: 'hassan123',
+  },
+  {
+    id: '12',
+    name: 'Nida Iqbal',
+    role: 'Employee',
+    email: 'nida@example.com',
+    team: undefined,
+    department: 'Web Development',
+    status: 'Leave',
+    phone: '+92 311 5550106',
+    cnic: '61101-5555666-7',
+    address: 'Gulshan-e-Iqbal, Karachi',
+    employeeCode: 'GDC-EMP-006',
+    password: 'nida123',
+  },
+  {
+    id: '13',
+    name: 'Zainab Farooq',
+    role: 'Employee',
+    email: 'zainab@example.com',
+    team: undefined,
+    department: 'Web Development',
+    status: 'Available',
+    phone: '+92 304 5550107',
+    cnic: '35202-6666777-8',
+    address: 'Bahria Town Phase 4, Lahore',
+    employeeCode: 'GDC-TL-003',
+    password: 'zainab123',
+  },
 ];
+
+const mockUsers = DEMO_USER_SEED;
+
+/** Demo seed merged with persisted rows (`id` wins from persisted). Fixes truncated localStorage rosters. */
+export function mergeUsersWithSeed(persisted: User[]): User[] {
+  const map = new Map<string, User>();
+  for (const u of DEMO_USER_SEED) {
+    map.set(u.id, { ...u });
+  }
+  for (const u of persisted) {
+    if (!u?.id) continue;
+    const base = map.get(u.id);
+    map.set(u.id, base ? { ...base, ...u } : { ...u });
+  }
+  return [...map.values()];
+}
+
+/** Team registry = unique non-empty `user.team` values only (no legacy preset junk in `teams`). */
+export function deriveTeamsRegistryFromUsers(users: User[]): string[] {
+  const s = new Set<string>();
+  for (const u of users) {
+    const t = typeof u.team === 'string' ? u.team.trim() : '';
+    if (t) s.add(t);
+  }
+  return [...s].sort((a, b) => a.localeCompare(b));
+}
 
 export const useStore = create<AppState>()(
   persist(
@@ -486,7 +684,15 @@ export const useStore = create<AppState>()(
       currentUser: mockUsers[0],
       users: mockUsers,
       timesheets: [],
-      teams: ['Development', 'Design', 'HR', 'Support', 'Management'],
+      attendanceDayOverrides: {} as Record<string, { hour: number; minute: number }>,
+      adhocShiftsEnabled: true,
+      geoFencingEnabled: false,
+      geoFencingUseGlobalRadius: true,
+      geoFencingGlobalRadiusMiles: 0,
+      geoFencingSiteRadiusMiles: {} as Record<string, number>,
+      geoFencingOfficeLat: null as number | null,
+      geoFencingOfficeLng: null as number | null,
+      teams: [],
       sites: ['Karachi HQ', 'Lahore Office', 'Islamabad', 'Remote'],
       tasks: [
         {
@@ -621,28 +827,31 @@ export const useStore = create<AppState>()(
       ],
       Leave: [],
       manualTimeRequests: [],
+      employeeDailyUpdates: [] as EmployeeDailyUpdate[],
+      teamLeaderDailySummaries: [] as TeamLeaderDailySummary[],
+      hrDailySummaries: [] as HRDailySummary[],
       chatThreads: initialChatThreads,
       passwordResetTokens: [] as PasswordResetToken[],
       availability: [],
       setCurrentUser: (user) => set({ currentUser: user }),
       
       clockIn: () => {
-        const { currentUser, timesheets } = get();
+        const { currentUser, timesheets, adhocShiftsEnabled, attendanceDayOverrides } = get();
         if (!currentUser) return;
-        
+        if (!adhocShiftsEnabled && currentUser.role !== 'Admin') return;
+        if (currentUser.role !== 'Admin') {
+          if (clockInBlockedBeforeOfficeStart(new Date(), attendanceDayOverrides)) return;
+        }
+
         const now = new Date();
         const clockInTime = now.toISOString();
-        
-        // Late Mark rule: after 9:00 AM
-        // We will consider it late if hours > 9 or (hours == 9 and minutes > 0)
-        const isLate = now.getHours() > 9 || (now.getHours() === 9 && now.getMinutes() > 0);
-        
+
         const newEntry: TimesheetEntry = {
           id: Math.random().toString(36).substring(7),
           userId: currentUser.id,
           clockIn: clockInTime,
           breaks: [],
-          lateMark: isLate,
+          lateMark: isClockInLate(clockInTime, attendanceDayOverrides),
         };
         
         set({ timesheets: [...timesheets, newEntry] });
@@ -719,9 +928,50 @@ export const useStore = create<AppState>()(
         set({ timesheets: updatedTimesheets });
       },
 
+      setAttendanceDayOverride: (date, hour, minute) => {
+        const { currentUser } = get();
+        if (currentUser?.role !== 'Admin') return;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+        if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return;
+        set((s) => ({
+          attendanceDayOverrides: { ...s.attendanceDayOverrides, [date]: { hour, minute } },
+        }));
+      },
+
+      clearAttendanceDayOverride: (date) => {
+        const { currentUser } = get();
+        if (currentUser?.role !== 'Admin') return;
+        set((s) => {
+          const next = { ...s.attendanceDayOverrides };
+          delete next[date];
+          return { attendanceDayOverrides: next };
+        });
+      },
+
+      patchAttendanceControlSettings: (patch) => {
+        if (get().currentUser?.role !== 'Admin') return;
+        set((s) => ({
+          adhocShiftsEnabled: patch.adhocShiftsEnabled ?? s.adhocShiftsEnabled,
+          geoFencingEnabled: patch.geoFencingEnabled ?? s.geoFencingEnabled,
+          geoFencingUseGlobalRadius: patch.geoFencingUseGlobalRadius ?? s.geoFencingUseGlobalRadius,
+          geoFencingGlobalRadiusMiles:
+            patch.geoFencingGlobalRadiusMiles !== undefined
+              ? Math.max(0, patch.geoFencingGlobalRadiusMiles)
+              : s.geoFencingGlobalRadiusMiles,
+          geoFencingSiteRadiusMiles:
+            patch.geoFencingSiteRadiusMiles !== undefined
+              ? { ...s.geoFencingSiteRadiusMiles, ...patch.geoFencingSiteRadiusMiles }
+              : s.geoFencingSiteRadiusMiles,
+          geoFencingOfficeLat:
+            patch.geoFencingOfficeLat !== undefined ? patch.geoFencingOfficeLat : s.geoFencingOfficeLat,
+          geoFencingOfficeLng:
+            patch.geoFencingOfficeLng !== undefined ? patch.geoFencingOfficeLng : s.geoFencingOfficeLng,
+        }));
+      },
+
       addManualTimesheetEntry: (input) => {
-        const { currentUser, timesheets, users } = get();
-        if (!currentUser || currentUser.role !== 'HR') return;
+        const { currentUser, timesheets, users, attendanceDayOverrides } = get();
+        if (!currentUser || (currentUser.role !== 'HR' && currentUser.role !== 'Admin')) return;
 
         const { userId, date, clockInTime, clockOutTime, breakInTime, breakOutTime } = input;
         const targetUser = users.find(u => u.id === userId);
@@ -738,9 +988,8 @@ export const useStore = create<AppState>()(
         const outMs = new Date(outIso).getTime();
         if (!Number.isFinite(inMs) || !Number.isFinite(outMs) || outMs <= inMs) return;
 
-        // Late mark rule: after 9:00 AM
-        const inDate = new Date(inIso);
-        const lateMark = inDate.getHours() > 9 || (inDate.getHours() === 9 && inDate.getMinutes() > 0);
+        // Late mark uses that day’s office start (default 9:00 or Admin override).
+        const lateMark = isClockInLate(inIso, attendanceDayOverrides);
 
         // Optional single break interval
         const breaks: BreakEntry[] = [];
@@ -781,6 +1030,81 @@ export const useStore = create<AppState>()(
 
         const newEntry: TimesheetEntry = {
           id: Math.random().toString(36).substring(7),
+          userId,
+          clockIn: inIso,
+          clockOut: outIso,
+          breaks,
+          totalHours,
+          lateMark,
+          overtime,
+        };
+
+        set({ timesheets: [...nextTimesheets, newEntry] });
+      },
+
+      updateTimesheetEntryTimes: (input) => {
+        const { currentUser, timesheets, users, attendanceDayOverrides } = get();
+        if (!currentUser || (currentUser.role !== 'HR' && currentUser.role !== 'Admin')) return;
+
+        const { entryId, userId, date, clockInTime, clockOutTime, breakInTime, breakOutTime } = input;
+        const targetUser = users.find((u) => u.id === userId);
+        if (!targetUser || targetUser.role === 'Pending User') return;
+
+        const existing = timesheets.find((t) => t.id === entryId);
+        if (!existing || existing.userId !== userId) return;
+
+        if (!date || !clockInTime || !clockOutTime) return;
+
+        const buildIso = (d: string, t: string) => new Date(`${d}T${t}:00`).toISOString();
+        const inIso = buildIso(date, clockInTime);
+        const outIso = buildIso(date, clockOutTime);
+
+        const inMs = new Date(inIso).getTime();
+        const outMs = new Date(outIso).getTime();
+        if (!Number.isFinite(inMs) || !Number.isFinite(outMs) || outMs <= inMs) return;
+
+        const lateMark = isClockInLate(inIso, attendanceDayOverrides);
+
+        const breaks: BreakEntry[] = [];
+        let breakDurationHours = 0;
+        if (breakInTime && breakOutTime) {
+          const bInIso = buildIso(date, breakInTime);
+          const bOutIso = buildIso(date, breakOutTime);
+          const bInMs = new Date(bInIso).getTime();
+          const bOutMs = new Date(bOutIso).getTime();
+          if (Number.isFinite(bInMs) && Number.isFinite(bOutMs) && bOutMs > bInMs) {
+            breakDurationHours = (bOutMs - bInMs) / (1000 * 60 * 60);
+            breaks.push({
+              id: Math.random().toString(36).substring(7),
+              startTime: bInIso,
+              endTime: bOutIso,
+            });
+          }
+        }
+
+        let totalHours = (outMs - inMs) / (1000 * 60 * 60) - breakDurationHours;
+        totalHours = Math.max(0, totalHours);
+        const overtime = totalHours > 8 ? totalHours - 8 : 0;
+
+        const targetDate = new Date(`${date}T00:00:00`);
+        const sameYMD = (iso: string) => {
+          const d = new Date(iso);
+          return (
+            d.getFullYear() === targetDate.getFullYear() &&
+            d.getMonth() === targetDate.getMonth() &&
+            d.getDate() === targetDate.getDate()
+          );
+        };
+
+        const without = timesheets.filter((t) => t.id !== entryId);
+        const nextTimesheets = without.filter((t) => {
+          if (t.userId !== userId) return true;
+          if (!sameYMD(t.clockIn)) return true;
+          return !t.clockOut;
+        });
+
+        const newEntry: TimesheetEntry = {
+          id: entryId,
           userId,
           clockIn: inIso,
           clockOut: outIso,
@@ -838,7 +1162,7 @@ export const useStore = create<AppState>()(
       },
 
       approveManualTimeRequest: (requestId) => {
-        const { currentUser, manualTimeRequests, timesheets } = get();
+        const { currentUser, manualTimeRequests, timesheets, attendanceDayOverrides } = get();
         if (!currentUser) return;
         const canReview = currentUser.role === 'Admin' || currentUser.role === 'HR';
         if (!canReview) return;
@@ -854,8 +1178,7 @@ export const useStore = create<AppState>()(
         const outMs = new Date(outIso).getTime();
         if (!Number.isFinite(inMs) || !Number.isFinite(outMs) || outMs <= inMs) return;
 
-        const inDate = new Date(inIso);
-        const lateMark = inDate.getHours() > 9 || (inDate.getHours() === 9 && inDate.getMinutes() > 0);
+        const lateMark = isClockInLate(inIso, attendanceDayOverrides);
 
         const breaks: BreakEntry[] = [];
         let breakDurationHours = 0;
@@ -1145,10 +1468,13 @@ export const useStore = create<AppState>()(
         }));
       },
 
-      submitTask: (taskId) => {
+      submitTask: (taskId, submissionNote) => {
         const { currentUser, tasks } = get();
         if (!currentUser) return;
         if (currentUser.role !== 'Employee' && currentUser.role !== 'Team Leader') return;
+
+        const note = submissionNote.trim();
+        if (!note) return;
 
         const task = tasks.find(t => t.id === taskId);
         if (!task) return;
@@ -1169,6 +1495,7 @@ export const useStore = create<AppState>()(
               fromStatus,
               toStatus: 'Submitted',
               action: 'Submit',
+              feedback: note,
             };
             return { ...t, status: 'Submitted', history: [...(t.history || []), entry] };
           }),
@@ -1321,16 +1648,152 @@ export const useStore = create<AppState>()(
         };
       }),
 
+      upsertEmployeeDailyUpdate: ({ date, body }) => {
+        const actor = get().currentUser;
+        if (!actor || actor.role !== 'Employee') {
+          return { ok: false, error: 'Only employees can submit a personal daily update.' };
+        }
+        const trimmed = body.trim();
+        if (!trimmed) return { ok: false, error: 'Please enter your update.' };
+        const d = date.trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return { ok: false, error: 'Invalid date.' };
+        const now = new Date().toISOString();
+        set((state) => {
+          const list = state.employeeDailyUpdates;
+          const idx = list.findIndex((e) => e.userId === actor.id && e.date === d);
+          const nextRow: EmployeeDailyUpdate =
+            idx >= 0
+              ? { ...list[idx], body: trimmed, updatedAt: now }
+              : {
+                  id: Math.random().toString(36).slice(2),
+                  userId: actor.id,
+                  date: d,
+                  body: trimmed,
+                  createdAt: now,
+                  updatedAt: now,
+                };
+          const employeeDailyUpdates =
+            idx >= 0 ? list.map((e, i) => (i === idx ? nextRow : e)) : [...list, nextRow];
+          return { employeeDailyUpdates };
+        });
+        return { ok: true };
+      },
+
+      upsertTeamLeaderDailySummary: ({ date, body }) => {
+        const actor = get().currentUser;
+        const team = actor?.team?.trim();
+        if (!actor || actor.role !== 'Team Leader' || !team) {
+          return { ok: false, error: 'Only team leaders assigned to a team can submit a team summary.' };
+        }
+        const trimmed = body.trim();
+        if (!trimmed) return { ok: false, error: 'Please enter a team summary.' };
+        const d = date.trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return { ok: false, error: 'Invalid date.' };
+        const now = new Date().toISOString();
+        set((state) => {
+          const list = state.teamLeaderDailySummaries;
+          const idx = list.findIndex((s) => s.team === team && s.date === d);
+          const nextRow: TeamLeaderDailySummary =
+            idx >= 0
+              ? { ...list[idx], authorId: actor.id, body: trimmed, updatedAt: now }
+              : {
+                  id: Math.random().toString(36).slice(2),
+                  team,
+                  date: d,
+                  authorId: actor.id,
+                  body: trimmed,
+                  createdAt: now,
+                  updatedAt: now,
+                };
+          const teamLeaderDailySummaries =
+            idx >= 0 ? list.map((s, i) => (i === idx ? nextRow : s)) : [...list, nextRow];
+          return { teamLeaderDailySummaries };
+        });
+        return { ok: true };
+      },
+
+      upsertHRDailySummary: ({ date, body }) => {
+        const actor = get().currentUser;
+        if (!actor || actor.role !== 'HR') {
+          return { ok: false, error: 'Only HR can submit this organization summary.' };
+        }
+        const trimmed = body.trim();
+        if (!trimmed) return { ok: false, error: 'Please enter the HR summary.' };
+        const d = date.trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return { ok: false, error: 'Invalid date.' };
+        const now = new Date().toISOString();
+        set((state) => {
+          const list = state.hrDailySummaries;
+          const idx = list.findIndex((s) => s.date === d);
+          const nextRow: HRDailySummary =
+            idx >= 0
+              ? { ...list[idx], authorId: actor.id, body: trimmed, updatedAt: now }
+              : {
+                  id: Math.random().toString(36).slice(2),
+                  date: d,
+                  authorId: actor.id,
+                  body: trimmed,
+                  createdAt: now,
+                  updatedAt: now,
+                };
+          const hrDailySummaries =
+            idx >= 0 ? list.map((s, i) => (i === idx ? nextRow : s)) : [...list, nextRow];
+          return { hrDailySummaries };
+        });
+        return { ok: true };
+      },
+
       removeUser: (userId) => set((state) => ({
         users: state.users.filter(u => u.id !== userId)
       })),
 
       updateUser: (userId, updates) =>
         set((state) => {
-          const users = state.users.map((u) => (u.id === userId ? { ...u, ...updates } : u));
-          const currentUser =
-            state.currentUser?.id === userId ? { ...state.currentUser, ...updates } : state.currentUser;
-          return { users, currentUser };
+          const subject = state.users.find((u) => u.id === userId);
+          if (!subject) return state;
+
+          /** TL → HR/Admin: no longer on a product team roster. */
+          let effectiveUpdates: Partial<User> = { ...updates };
+          if (
+            subject.role === 'Team Leader' &&
+            updates.role &&
+            updates.role !== 'Team Leader' &&
+            (updates.role === 'HR' || updates.role === 'Admin')
+          ) {
+            effectiveUpdates = { ...effectiveUpdates, team: undefined, workSite: undefined };
+          }
+
+          let nextUsers = state.users;
+
+          if (effectiveUpdates.role === 'Team Leader') {
+            const hasTeamKey = Object.prototype.hasOwnProperty.call(effectiveUpdates, 'team');
+            const incomingTeam = hasTeamKey ? effectiveUpdates.team : subject.team;
+            const targetTeam = typeof incomingTeam === 'string' ? incomingTeam.trim() : '';
+
+            if (targetTeam) {
+              nextUsers = nextUsers.map((u) => {
+                if (u.id === userId) return u;
+                if (u.role === 'Team Leader' && u.team?.trim() === targetTeam) {
+                  return { ...u, role: 'Employee' as Role };
+                }
+                return u;
+              });
+            }
+          }
+
+          nextUsers = nextUsers.map((u) => (u.id === userId ? { ...u, ...effectiveUpdates } : u));
+
+          let currentUser = state.currentUser;
+          if (currentUser) {
+            const refreshed = nextUsers.find((x) => x.id === currentUser!.id);
+            if (refreshed) currentUser = refreshed;
+          }
+
+          return {
+            users: nextUsers,
+            currentUser,
+            teams: deriveTeamsRegistryFromUsers(nextUsers),
+          };
         }),
 
       addTeam: (name) => set((state) => ({
@@ -1514,7 +1977,14 @@ export const useStore = create<AppState>()(
         const trimmed = targetTeamName.trim();
         if (!trimmed) return { ok: false, error: 'Pick a target team.' };
 
-        const { users } = get();
+        const { users, teams } = get();
+        if (!teams.includes(trimmed)) {
+          return {
+            ok: false,
+            error:
+              'That team does not exist yet. Create it first with “Create team roster” on Team assign to TL.',
+          };
+        }
         const user = users.find((u) => u.id === userId);
         if (!user?.team) return { ok: false, error: 'User has no team to move from.' };
         if (user.role === 'Team Leader') {
@@ -1552,6 +2022,15 @@ export const useStore = create<AppState>()(
         }
         const trimmed = teamName.trim();
         if (!trimmed) return { ok: false, error: 'Team name required.' };
+
+        const { teams } = get();
+        if (!teams.includes(trimmed)) {
+          return {
+            ok: false,
+            error:
+              'Create this team first with “Create team roster” (+). Members can only be added after the team exists.',
+          };
+        }
 
         const unique = [...new Set(employeeIds)];
         if (unique.length < 1) return { ok: false, error: 'Select at least one employee.' };
@@ -2072,8 +2551,8 @@ export const useStore = create<AppState>()(
           id: Math.random().toString(36).substring(7),
           name: name.trim(),
           email: trimmedEmail,
-          role: 'Pending User',
-          team: department,
+          role: 'Employee',
+          team: undefined,
           status: undefined,
           phone: phone.trim(),
           department,
@@ -2105,15 +2584,49 @@ export const useStore = create<AppState>()(
         }
         const token = `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
         const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+        const otp = String(Math.floor(100000 + Math.random() * 900000));
         const entry: PasswordResetToken = {
           id: Math.random().toString(36).substring(7),
           email: trimmedEmail,
           token,
           expiresAt,
+          otp,
+          otpVerified: false,
         };
         const next = passwordResetTokens.filter(t => t.email !== trimmedEmail);
         set({ passwordResetTokens: [...next, entry] });
-        return { ok: true, token, expiresAt };
+        return { ok: true, demoOtp: otp };
+      },
+
+      verifyPasswordResetOtp: (email, otp) => {
+        const trimmedEmail = email.trim().toLowerCase();
+        const code = otp.replace(/\D/g, '').slice(0, 6);
+        if (code.length !== 6) {
+          return { ok: false, error: 'Enter the full 6-digit code.' };
+        }
+        const { passwordResetTokens } = get();
+        const rec = passwordResetTokens.find(t => t.email === trimmedEmail);
+        if (!rec) {
+          return { ok: false, error: 'No reset request found. Go back and request a code again.' };
+        }
+        if (new Date(rec.expiresAt).getTime() < Date.now()) {
+          set({ passwordResetTokens: passwordResetTokens.filter(t => t.email !== trimmedEmail) });
+          return { ok: false, error: 'This code has expired. Request a new one.' };
+        }
+        if (!rec.otp) {
+          return { ok: true, token: rec.token };
+        }
+        if (rec.otp !== code) {
+          return { ok: false, error: 'Invalid code. Check and try again.' };
+        }
+        if (!rec.otpVerified) {
+          set({
+            passwordResetTokens: passwordResetTokens.map(t =>
+              t.email === trimmedEmail ? { ...t, otpVerified: true } : t
+            ),
+          });
+        }
+        return { ok: true, token: rec.token };
       },
 
       resetPasswordWithToken: (token, newPassword) => {
@@ -2129,6 +2642,9 @@ export const useStore = create<AppState>()(
           set({ passwordResetTokens: passwordResetTokens.filter(t => t.token !== token) });
           return { ok: false, error: 'This reset link has expired. Request a new one.' };
         }
+        if (rec.otp && !rec.otpVerified) {
+          return { ok: false, error: 'Verify the code sent to your email before setting a new password.' };
+        }
         const email = rec.email.toLowerCase();
         set({
           users: users.map(u =>
@@ -2141,7 +2657,7 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'gdc-storage',
-      version: 12,
+      version: 16,
       migrate: (persistedState: any) => {
         if (!persistedState) return persistedState;
 
@@ -2168,37 +2684,87 @@ export const useStore = create<AppState>()(
 
         const { chatLastReadAt: _discardLegacyRead, ...persistWithoutRead } = persistedState;
 
+        const normalizedUsers: User[] = Array.isArray(persistedState.users)
+          ? (persistedState.users as any[]).map((u) => {
+              const fixedStatus = u?.status === 'Holiday' ? { ...u, status: 'Unavailable' as const } : u;
+              const em = String(fixedStatus?.email || '').toLowerCase();
+              const mock = mockUsers.find((m) => m.email.toLowerCase() === em);
+              const merged =
+                mock && mock.email.toLowerCase() === em
+                  ? {
+                      ...fixedStatus,
+                      department: fixedStatus?.department ?? mock.department,
+                      phone: fixedStatus?.phone ?? mock.phone,
+                      cnic: fixedStatus?.cnic ?? mock.cnic,
+                      address: fixedStatus?.address ?? mock.address,
+                      employeeCode: fixedStatus?.employeeCode ?? mock.employeeCode,
+                    }
+                  : fixedStatus;
+              if (!merged?.password && em && demoPasswords[em]) {
+                return { ...merged, password: demoPasswords[em] };
+              }
+              return merged;
+            }) as User[]
+          : [];
+
+        const mergedUsers = mergeUsersWithSeed(normalizedUsers);
         const nextState = {
           ...persistWithoutRead,
+          attendanceDayOverrides:
+            persistedState.attendanceDayOverrides &&
+            typeof persistedState.attendanceDayOverrides === 'object' &&
+            !Array.isArray(persistedState.attendanceDayOverrides)
+              ? persistedState.attendanceDayOverrides
+              : {},
+          adhocShiftsEnabled:
+            typeof persistedState.adhocShiftsEnabled === 'boolean' ? persistedState.adhocShiftsEnabled : true,
+          geoFencingEnabled:
+            typeof persistedState.geoFencingEnabled === 'boolean' ? persistedState.geoFencingEnabled : false,
+          geoFencingUseGlobalRadius:
+            typeof persistedState.geoFencingUseGlobalRadius === 'boolean'
+              ? persistedState.geoFencingUseGlobalRadius
+              : true,
+          geoFencingGlobalRadiusMiles:
+            typeof persistedState.geoFencingGlobalRadiusMiles === 'number'
+              ? Math.max(0, persistedState.geoFencingGlobalRadiusMiles)
+              : 0,
+          geoFencingSiteRadiusMiles:
+            persistedState.geoFencingSiteRadiusMiles &&
+            typeof persistedState.geoFencingSiteRadiusMiles === 'object' &&
+            !Array.isArray(persistedState.geoFencingSiteRadiusMiles)
+              ? persistedState.geoFencingSiteRadiusMiles
+              : {},
+          geoFencingOfficeLat:
+            typeof persistedState.geoFencingOfficeLat === 'number' ? persistedState.geoFencingOfficeLat : null,
+          geoFencingOfficeLng:
+            typeof persistedState.geoFencingOfficeLng === 'number' ? persistedState.geoFencingOfficeLng : null,
           sites:
             Array.isArray(persistedState.sites) && persistedState.sites.length > 0
               ? persistedState.sites
               : defaultSites,
           manualTimeRequests: Array.isArray(persistedState.manualTimeRequests) ? persistedState.manualTimeRequests : [],
-          passwordResetTokens: Array.isArray(persistedState.passwordResetTokens) ? persistedState.passwordResetTokens : [],
+          passwordResetTokens: Array.isArray(persistedState.passwordResetTokens)
+            ? (persistedState.passwordResetTokens as PasswordResetToken[]).map((t) => {
+                const raw = t as PasswordResetToken & { otp?: string; otpVerified?: boolean };
+                const hasOtp = typeof raw.otp === 'string' && raw.otp.length > 0;
+                return {
+                  ...t,
+                  otp: hasOtp ? raw.otp : '',
+                  otpVerified:
+                    typeof raw.otpVerified === 'boolean' ? raw.otpVerified : !hasOtp,
+                };
+              })
+            : [],
+          employeeDailyUpdates: Array.isArray(persistedState.employeeDailyUpdates)
+            ? persistedState.employeeDailyUpdates
+            : [],
+          teamLeaderDailySummaries: Array.isArray(persistedState.teamLeaderDailySummaries)
+            ? persistedState.teamLeaderDailySummaries
+            : [],
+          hrDailySummaries: Array.isArray(persistedState.hrDailySummaries) ? persistedState.hrDailySummaries : [],
           chatThreads: threadsWithReceipts,
-          users: Array.isArray(persistedState.users)
-            ? (persistedState.users as any[]).map((u) => {
-                const fixedStatus = u?.status === 'Holiday' ? { ...u, status: 'Unavailable' as const } : u;
-                const em = String(fixedStatus?.email || '').toLowerCase();
-                const mock = mockUsers.find((m) => m.email.toLowerCase() === em);
-                const merged =
-                  mock && mock.email.toLowerCase() === em
-                    ? {
-                        ...fixedStatus,
-                        department: fixedStatus?.department ?? mock.department,
-                        phone: fixedStatus?.phone ?? mock.phone,
-                        cnic: fixedStatus?.cnic ?? mock.cnic,
-                        address: fixedStatus?.address ?? mock.address,
-                        employeeCode: fixedStatus?.employeeCode ?? mock.employeeCode,
-                      }
-                    : fixedStatus;
-                if (!merged?.password && em && demoPasswords[em]) {
-                  return { ...merged, password: demoPasswords[em] };
-                }
-                return merged;
-              }) as User[]
-            : persistedState.users,
+          users: mergedUsers,
+          teams: deriveTeamsRegistryFromUsers(mergedUsers),
         };
 
         // Migration for new task workflow model.
@@ -2246,7 +2812,35 @@ export const useStore = create<AppState>()(
         return {
           ...nextState,
           tasks: migratedTasks,
+          teams: deriveTeamsRegistryFromUsers(nextState.users || []),
         };
+      },
+      merge: (persistedState: unknown, currentState: AppState) => {
+        const partial =
+          persistedState && typeof persistedState === 'object'
+            ? (persistedState as Partial<AppState>)
+            : {};
+        const merged = { ...currentState, ...partial };
+        if (merged.attendanceDayOverrides == null || typeof merged.attendanceDayOverrides !== 'object') {
+          merged.attendanceDayOverrides = {};
+        }
+        if (typeof merged.adhocShiftsEnabled !== 'boolean') merged.adhocShiftsEnabled = true;
+        if (typeof merged.geoFencingEnabled !== 'boolean') merged.geoFencingEnabled = false;
+        if (typeof merged.geoFencingUseGlobalRadius !== 'boolean') merged.geoFencingUseGlobalRadius = true;
+        if (typeof merged.geoFencingGlobalRadiusMiles !== 'number') merged.geoFencingGlobalRadiusMiles = 0;
+        if (merged.geoFencingSiteRadiusMiles == null || typeof merged.geoFencingSiteRadiusMiles !== 'object') {
+          merged.geoFencingSiteRadiusMiles = {};
+        }
+        if (merged.geoFencingOfficeLat !== null && typeof merged.geoFencingOfficeLat !== 'number') {
+          merged.geoFencingOfficeLat = null;
+        }
+        if (merged.geoFencingOfficeLng !== null && typeof merged.geoFencingOfficeLng !== 'number') {
+          merged.geoFencingOfficeLng = null;
+        }
+        if (Array.isArray(merged.users)) {
+          merged.teams = deriveTeamsRegistryFromUsers(merged.users);
+        }
+        return merged;
       },
     }
   )

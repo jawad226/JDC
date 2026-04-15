@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useStore, useShallow, type LeaveType } from '@/lib/store';
+import { toast } from '@/lib/toast';
 import type { RequestsHubTab } from '@/components/requests/RequestsHubShell';
 import type { RequestStatusFilter } from './types';
 
@@ -83,15 +84,15 @@ export function useMyRequestsController() {
     e.preventDefault();
     if (!currentUser) return;
     if (!startDate || !endDate) {
-      alert('Please fill in both start and end dates.');
+      toast('Please fill in both start and end dates.', 'error');
       return;
     }
     if (new Date(startDate) > new Date(endDate)) {
-      alert('End date cannot be before start date.');
+      toast('End date cannot be before start date.', 'error');
       return;
     }
     applyLeave({ userId: currentUser.id, type: leaveType, startDate, endDate, reason });
-    alert('Leave request submitted successfully.');
+    toast('Leave request submitted successfully.');
     setStartDate('');
     setEndDate('');
     setReason('');
@@ -102,15 +103,15 @@ export function useMyRequestsController() {
     e.preventDefault();
     if (!currentUser) return;
     if (!manualDate) {
-      alert('Please select a date.');
+      toast('Please select a date.', 'error');
       return;
     }
     if (breakInTime && !breakOutTime) {
-      alert('If you add Break In, you must also add Break Out.');
+      toast('If you add Break In, you must also add Break Out.', 'error');
       return;
     }
     if (!breakInTime && breakOutTime) {
-      alert('If you add Break Out, you must also add Break In.');
+      toast('If you add Break Out, you must also add Break In.', 'error');
       return;
     }
     applyManualTimeRequest({
@@ -121,7 +122,7 @@ export function useMyRequestsController() {
       breakOutTime: breakOutTime || undefined,
       reason: manualReason || undefined,
     });
-    alert('Manual time request submitted successfully.');
+    toast('Manual time request submitted successfully.');
     setManualDate('');
     setBreakInTime('');
     setBreakOutTime('');

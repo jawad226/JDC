@@ -1,5 +1,10 @@
+import { Suspense } from 'react';
 import { RequestManagementView } from '@/features/request-management';
 
 export default function RequestManagementPage() {
-  return <RequestManagementView />;
+  return (
+    <Suspense fallback={<div className="mx-auto max-w-6xl p-8 text-center text-sm text-slate-500">Loading…</div>}>
+      <RequestManagementView />
+    </Suspense>
+  );
 }

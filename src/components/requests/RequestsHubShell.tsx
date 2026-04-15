@@ -11,11 +11,6 @@ const TAB_LABELS: Record<RequestsHubTab, string> = {
   manual: 'Manual Time Requests',
 };
 
-export const REQUESTS_HUB_TITLES: Record<RequestsHubTab, string> = {
-  leave: 'Pending Leave Requests',
-  manual: 'Pending Manual Time Requests',
-};
-
 export function RequestsHubShell({
   activeTab,
   onTabChange,

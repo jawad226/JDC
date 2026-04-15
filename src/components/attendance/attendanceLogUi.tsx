@@ -180,6 +180,9 @@ export function StandardFilterBar({
   rangeEnd,
   setRangeEnd,
   onFilterChange,
+  showSiteFilter = true,
+  showProviderFilter = true,
+  idSearchPlaceholder = 'Unique ID, code, or name',
 }: {
   sites: string[];
   providers: string[];
@@ -194,49 +197,58 @@ export function StandardFilterBar({
   rangeEnd: string;
   setRangeEnd: (v: string) => void;
   onFilterChange: () => void;
+  /** Admin / HR: site bucket. Hidden for team leads (team scope is fixed). */
+  showSiteFilter?: boolean;
+  /** Admin / HR: Employee vs HR vs TL. Hidden for team leads. */
+  showProviderFilter?: boolean;
+  idSearchPlaceholder?: string;
 }) {
   return (
     <div className="flex flex-wrap items-end gap-2 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-      <label className="flex min-w-[140px] flex-1 flex-col gap-1 text-xs font-semibold text-slate-500">
-        Site
-        <select
-          value={siteFilter}
-          onChange={(e) => {
-            setSiteFilter(e.target.value);
-            onFilterChange();
-          }}
-          className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-100"
-        >
-          {sites.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="flex min-w-[140px] flex-1 flex-col gap-1 text-xs font-semibold text-slate-500">
-        Provider
-        <select
-          value={providerFilter}
-          onChange={(e) => {
-            setProviderFilter(e.target.value);
-            onFilterChange();
-          }}
-          className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-100"
-        >
-          {providers.map((p) => (
-            <option key={p} value={p}>
-              {p}
-            </option>
-          ))}
-        </select>
-      </label>
+      {showSiteFilter ? (
+        <label className="flex min-w-[140px] flex-1 flex-col gap-1 text-xs font-semibold text-slate-500">
+          Site
+          <select
+            value={siteFilter}
+            onChange={(e) => {
+              setSiteFilter(e.target.value);
+              onFilterChange();
+            }}
+            className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-100"
+          >
+            {sites.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      {showProviderFilter ? (
+        <label className="flex min-w-[140px] flex-1 flex-col gap-1 text-xs font-semibold text-slate-500">
+          Role
+          <select
+            value={providerFilter}
+            onChange={(e) => {
+              setProviderFilter(e.target.value);
+              onFilterChange();
+            }}
+            className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-100"
+          >
+            {providers.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       <label className="flex min-w-[160px] flex-1 flex-col gap-1 text-xs font-semibold text-slate-500">
-        ID search
+        Unique ID / search
         <input
           type="search"
           value={idQuery}
-          placeholder="Employee ID or code"
+          placeholder={idSearchPlaceholder}
           onChange={(e) => {
             setIdQuery(e.target.value);
             onFilterChange();

@@ -1,11 +1,15 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useStore, useShallow } from '@/lib/store';
 import type { RequestsHubTab } from '@/components/requests/RequestsHubShell';
 import type { ReviewStatusFilter } from './constants';
 
 export function useRequestManagementController() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const {
     currentUser,
     Leave,
@@ -26,7 +30,11 @@ export function useRequestManagementController() {
     }))
   );
 
-  const [activeTab, setActiveTab] = useState<RequestsHubTab>('leave');
+  const activeTab = useMemo((): RequestsHubTab => {
+    const t = searchParams.get('tab');
+    return t === 'manual' ? 'manual' : 'leave';
+  }, [searchParams]);
+
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<ReviewStatusFilter>('Pending');
   const [activeRejectId, setActiveRejectId] = useState<string | null>(null);
@@ -78,7 +86,11 @@ export function useRequestManagementController() {
   const canReviewManual = currentUser?.role === 'Admin' || currentUser?.role === 'HR';
 
   const onTabChange = (tab: RequestsHubTab) => {
-    setActiveTab(tab);
+    const q = new URLSearchParams(searchParams.toString());
+    q.set('tab', tab);
+    const qs = q.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    setStatusFilter('Pending');
     setActiveRejectId(null);
     setRejectFeedback('');
   };

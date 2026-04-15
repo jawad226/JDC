@@ -1,17 +1,22 @@
 'use client';
 
 import { Search } from 'lucide-react';
-import { RequestsHubShell, REQUESTS_HUB_TITLES } from '@/components/requests/RequestsHubShell';
-import { REVIEW_STATUS_OPTIONS } from './constants';
+import { RequestsHubShell } from '@/components/requests/RequestsHubShell';
+import { REVIEW_STATUS_OPTIONS, getRequestManagementSectionTitle } from './constants';
 import type { ReviewStatusFilter } from './constants';
+import { useMemo } from 'react';
 import { LeaveReviewPanel } from './LeaveReviewPanel';
 import { ManualReviewPanel } from './ManualReviewPanel';
 import { useRequestManagementController } from './useRequestManagementController';
+import { toast } from '@/lib/toast';
 
 export function RequestManagementView() {
   const c = useRequestManagementController();
 
-  const sectionTitle = REQUESTS_HUB_TITLES[c.activeTab];
+  const sectionTitle = useMemo(
+    () => getRequestManagementSectionTitle(c.activeTab, c.statusFilter),
+    [c.activeTab, c.statusFilter]
+  );
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 pb-12">
@@ -44,11 +49,11 @@ export function RequestManagementView() {
               canReview={c.canReviewLeave}
               onApprove={(id) => {
                 c.updateLeavetatus(id, 'Approved');
-                alert('Leave approved!');
+                toast('Leave approved!');
               }}
               onReject={(id) => {
                 c.updateLeavetatus(id, 'Rejected');
-                alert('Leave rejected!');
+                toast('Leave rejected!');
               }}
             />
           )}
@@ -64,16 +69,16 @@ export function RequestManagementView() {
               setActiveRejectId={c.setActiveRejectId}
               onApprove={(id) => {
                 c.approveManualTimeRequest(id);
-                alert('Manual time approved!');
+                toast('Manual time approved!');
               }}
               onRejectConfirm={(id) => {
                 const trimmed = c.rejectFeedback.trim();
                 if (!trimmed) {
-                  alert('Feedback is required.');
+                  toast('Feedback is required.', 'error');
                   return;
                 }
                 c.rejectManualTimeRequest(id, trimmed);
-                alert('Manual time rejected!');
+                toast('Manual time rejected!');
                 c.setActiveRejectId(null);
                 c.setRejectFeedback('');
               }}

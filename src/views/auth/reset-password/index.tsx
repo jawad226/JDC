@@ -53,7 +53,7 @@ export default function ResetPasswordView() {
 
   return (
     <AuthShell title="Reset password">
-      <AuthAlerts error={error} success={success} />
+      <AuthAlerts error={error} success={success} onDismiss={() => { setError(null); setSuccess(null); }} />
       <form onSubmit={handleSubmit} className="space-y-4">
         <Link
           href="/auth/login"
@@ -62,20 +62,6 @@ export default function ResetPasswordView() {
           <ArrowLeft className="h-4 w-4" />
           Back to sign in
         </Link>
-        <div>
-          <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Reset token</label>
-          <div className="relative">
-            <KeyRound className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            <input
-              type="text"
-              required
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              className={`${AUTH_INPUT_CLASS} font-mono text-xs`}
-              placeholder="Paste token from email (demo)"
-            />
-          </div>
-        </div>
         <div>
           <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">New password</label>
           <div className="relative">

@@ -21,14 +21,16 @@ import {
   UserCog,
   BarChart3,
   MessageSquare,
+  ScrollText,
   X,
 } from 'lucide-react';
 
 const navItems = [
    { name: 'Dashboard', href: '/', icon: LayoutDashboard },
    { name: 'Messages', href: '/messages', icon: MessageSquare },
+   { name: 'Daily Updates', href: '/daily-updates', icon: ScrollText },
    { name: 'Team Data', href: '/team-data', icon: BarChart3 },
-   { name: 'Schedule', href: '/schedule', icon: Calendar },
+   { name: 'Project Manager', href: '/project-manager', icon: Calendar },
    { name: 'Timesheet', href: '/timesheet', icon: Clock },
    { name: 'Availability', href: '/availability', icon: CalendarClock },
    { name: 'My Requests', href: '/my-requests', icon: ClipboardList },
@@ -63,9 +65,19 @@ const navItems = [
    const filtered = navItems.filter((item) => {
      if (item.name === 'Admin Control' && currentUser?.role !== 'Admin') return false;
      if (item.name === 'My Requests' && currentUser?.role === 'Admin') return false;
-     if (item.name === 'Request Management' && currentUser?.role === 'Employee') return false;
+     if (item.name === 'Request Management' && currentUser?.role !== 'Admin' && currentUser?.role !== 'HR')
+       return false;
      if (item.name === 'Team assign to TL' && currentUser?.role !== 'Admin' && currentUser?.role !== 'HR') return false;
      if (item.name === 'Team Data' && currentUser?.role !== 'Team Leader') return false;
+     if (
+       item.name === 'Daily Updates' &&
+       currentUser?.role !== 'Employee' &&
+       currentUser?.role !== 'Team Leader' &&
+       currentUser?.role !== 'HR' &&
+       currentUser?.role !== 'Admin'
+     ) {
+       return false;
+     }
      return true;
    });
  
@@ -112,7 +124,10 @@ const navItems = [
          <nav className="px-4 py-4 space-y-1">
            {filtered.map((item) => {
              const Icon = item.icon;
-             const isActive = pathname === item.href;
+             const isActive =
+               item.href === '/admin'
+                 ? pathname === '/admin' || pathname.startsWith('/admin/')
+                 : pathname === item.href;
              return (
                <Link
                  key={item.name}

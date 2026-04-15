@@ -54,7 +54,15 @@ export default function RegisterView() {
 
   return (
     <AuthShell title="Create account" wide compact>
-      <AuthAlerts error={error} success={success} compact />
+      <AuthAlerts
+        error={error}
+        success={success}
+        compact
+        onDismiss={() => {
+          setError(null);
+          setSuccess(null);
+        }}
+      />
       <form onSubmit={handleSubmit} className="space-y-2 sm:space-y-2.5">
         <div>
           <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-500 sm:text-xs">

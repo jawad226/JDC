@@ -17,6 +17,24 @@ export const COMPANY_SITE_OPTIONS = [
 
 export const PROVIDER_ROLE_OPTIONS = ['All providers', 'Employees', 'HR', 'Team Leader'] as const;
 
+/** HR attendance UI: filter by Employee or Team Leader only (plus All). */
+export const HR_PROVIDER_FILTER_OPTIONS = ['All providers', 'Employees', 'Team Leader'] as const;
+
+/**
+ * True if query matches unique id, employee code, email, or name (substring, case-insensitive).
+ */
+export function userMatchesAttendanceSearch(user: User | undefined, fallbackUserId: string, q: string): boolean {
+  const t = q.trim().toLowerCase();
+  if (!t) return true;
+  if (!user) return fallbackUserId.toLowerCase().includes(t);
+  return (
+    user.id.toLowerCase().includes(t) ||
+    (user.employeeCode?.toLowerCase().includes(t) ?? false) ||
+    user.email.toLowerCase().includes(t) ||
+    (user.name?.toLowerCase().includes(t) ?? false)
+  );
+}
+
 /** Map a user to one site bucket for filtering. */
 export function siteBucketForUser(u: User | undefined): string {
   if (!u) return 'Web Development';

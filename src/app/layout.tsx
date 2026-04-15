@@ -28,16 +28,16 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className={`${inter.className} bg-slate-50 antialiased`}>
+    <html lang="en" className="min-h-dvh bg-slate-50">
+      <body className={`${inter.className} min-h-dvh bg-slate-50 antialiased`}>
         <AuthProvider>
-          <div className="flex h-[100dvh] min-h-0 w-full overflow-hidden">
-            <div className="hidden h-full shrink-0 lg:block">
+          <div className="flex min-h-0 h-dvh w-full overflow-hidden bg-slate-50">
+            <div className="hidden h-dvh min-h-0 shrink-0 self-stretch lg:flex lg:flex-col">
               <Sidebar />
             </div>
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-slate-50">
               <Topbar />
-              <main className="scrollbar-hide min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-slate-50/50 p-8 has-[.messages-route-root]:overflow-hidden has-[.messages-route-root]:p-0">
+              <main className="scrollbar-hide min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain bg-slate-50 p-8 has-[.messages-route-root]:overflow-hidden has-[.messages-route-root]:p-0">
                 {children}
               </main>
             </div>

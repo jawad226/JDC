@@ -15,10 +15,13 @@ import { downloadExcelCsv, openAttendancePdfReport } from '@/lib/attendanceExpor
 import {
   COMPANY_SITE_OPTIONS,
   PROVIDER_ROLE_OPTIONS,
+  HR_PROVIDER_FILTER_OPTIONS,
   employeeDisplayId,
   siteBucketForUser,
   providerLabelForRole,
+  userMatchesAttendanceSearch,
 } from '@/lib/attendanceSite';
+import { filterTimesheetsForViewer, isClockInLate } from '@/lib/attendanceRules';
 import { Calendar, Building2, User as UserIcon, Shield, FileSpreadsheet, FileDown, X } from 'lucide-react';
 
 type GroupRow = {
@@ -76,14 +79,24 @@ function buildGroups(timesheets: TimesheetEntry[], users: User[]): GroupRow[] {
 }
 
 export function GlobalAttendanceLog() {
-  const { timesheets, users } = useStore(
-    useShallow((s) => ({ timesheets: s.timesheets, users: s.users }))
+  const { timesheets, users, currentUser } = useStore(
+    useShallow((s) => ({ timesheets: s.timesheets, users: s.users, currentUser: s.currentUser }))
   );
 
-  const allGroups = useMemo(() => buildGroups(timesheets, users), [timesheets, users]);
+  const scopedTimesheets = useMemo(
+    () => filterTimesheetsForViewer(timesheets, users, currentUser),
+    [timesheets, users, currentUser]
+  );
+
+  const allGroups = useMemo(() => buildGroups(scopedTimesheets, users), [scopedTimesheets, users]);
 
   const sites = useMemo(() => [...COMPANY_SITE_OPTIONS], []);
-  const providers = useMemo(() => [...PROVIDER_ROLE_OPTIONS], []);
+  const providers = useMemo(() => {
+    if (currentUser?.role === 'HR') return [...HR_PROVIDER_FILTER_OPTIONS];
+    return [...PROVIDER_ROLE_OPTIONS];
+  }, [currentUser?.role]);
+
+  const isTeamLeaderViewer = currentUser?.role === 'Team Leader';
 
   const [siteFilter, setSiteFilter] = useState('All sites');
   const [providerFilter, setProviderFilter] = useState('All providers');
@@ -99,7 +112,6 @@ export function GlobalAttendanceLog() {
   const resetPage = () => setPage(1);
 
   const filtered = useMemo(() => {
-    const q = idQuery.trim().toLowerCase();
     return allGroups.filter((g) => {
       const bucket = siteBucketForUser(g.user);
       if (siteFilter !== 'All sites' && bucket !== siteFilter) return false;
@@ -111,15 +123,7 @@ export function GlobalAttendanceLog() {
         if (providerFilter === 'Team Leader' && pl !== 'Team Leader') return false;
       }
 
-      if (q && g.user) {
-        const idMatch =
-          g.user.id.toLowerCase().includes(q) ||
-          (g.user.employeeCode?.toLowerCase().includes(q) ?? false) ||
-          g.user.email.toLowerCase().includes(q);
-        if (!idMatch) return false;
-      } else if (q && !g.user) {
-        return false;
-      }
+      if (!userMatchesAttendanceSearch(g.user, g.userId, idQuery)) return false;
 
       if (rangeStart) {
         const rs = new Date(rangeStart);
@@ -218,7 +222,13 @@ export function GlobalAttendanceLog() {
   return (
     <div className="space-y-4">
       <AttendanceLogToolbar
-        title="Global Attendance Log"
+        title={
+          currentUser?.role === 'Team Leader'
+            ? 'Team attendance log'
+            : currentUser?.role === 'HR'
+              ? 'Company attendance (employees & team leads)'
+              : 'Global attendance log'
+        }
         filters={
           <StandardFilterBar
             sites={sites}
@@ -234,6 +244,13 @@ export function GlobalAttendanceLog() {
             rangeEnd={rangeEnd}
             setRangeEnd={setRangeEnd}
             onFilterChange={resetPage}
+            showSiteFilter={!isTeamLeaderViewer}
+            showProviderFilter={!isTeamLeaderViewer}
+            idSearchPlaceholder={
+              isTeamLeaderViewer
+                ? 'Team member — ID, code, or name'
+                : 'Unique ID, code, email, or name'
+            }
           />
         }
         actions={
@@ -376,12 +393,13 @@ function TimesheetApprovalPanel({
   onClose: () => void;
   embedded?: boolean;
 }) {
+  const attendanceDayOverrides = useStore((s) => s.attendanceDayOverrides);
   const site = siteBucketForUser(group.user);
   const periodLabel = `${format(group.weekStart, 'MMM d')} - ${format(group.weekEnd, 'MMM d, yyyy')}`;
   const idLine = employeeDisplayId(group.user, group.userId);
 
   const exportPanelExcel = () => {
-    const header = ['Sr#', 'Date', 'Clock In', 'Clock Out', 'Hours', 'ID'];
+    const header = ['Sr#', 'Date', 'Clock In', 'Clock Out', 'Hours', 'Status', 'ID'];
     const rowId = idLine;
     const data = group.entries.map((e, i) => [
       i + 1,
@@ -389,6 +407,7 @@ function TimesheetApprovalPanel({
       format(new Date(e.clockIn), 'HH:mm'),
       e.clockOut ? format(new Date(e.clockOut), 'HH:mm') : '—',
       typeof e.totalHours === 'number' ? e.totalHours.toFixed(2) : '—',
+      isClockInLate(e.clockIn, attendanceDayOverrides) ? 'Late' : 'On time',
       rowId,
     ]);
     const safeName = (group.user?.name ?? 'employee').replace(/[^\w\-]+/g, '_');
@@ -405,6 +424,7 @@ function TimesheetApprovalPanel({
             <td>${escapeAttr(format(new Date(e.clockIn), 'MM/dd/yyyy'))}</td>
             <td>${escapeAttr(format(new Date(e.clockIn), 'HH:mm'))} → ${e.clockOut ? escapeAttr(format(new Date(e.clockOut), 'HH:mm')) : '—'}</td>
             <td>${typeof e.totalHours === 'number' ? e.totalHours.toFixed(2) : '—'}</td>
+            <td>${isClockInLate(e.clockIn, attendanceDayOverrides) ? 'Late' : 'On time'}</td>
             <td>${escapeAttr(idLine)}</td>
           </tr>`
       )
@@ -413,7 +433,7 @@ function TimesheetApprovalPanel({
       <p><strong>Employee:</strong> ${escapeAttr(group.user?.name ?? 'Unknown')} &nbsp;|&nbsp; <strong>Site:</strong> ${escapeAttr(site)} &nbsp;|&nbsp; <strong>Provider:</strong> ${escapeAttr(prov)}</p>
       <p><strong>Period:</strong> ${escapeAttr(periodLabel)} &nbsp;|&nbsp; <strong>Total:</strong> ${escapeAttr(formatHoursMinutes(group.totalHours))}</p>
       <table>
-        <thead><tr><th>Sr#</th><th>Date</th><th>In / Out</th><th>Hours</th><th>ID</th></tr></thead>
+        <thead><tr><th>Sr#</th><th>Date</th><th>In / Out</th><th>Hours</th><th>Status</th><th>ID</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
     openAttendancePdfReport(`Timesheet — ${group.user?.name ?? 'Employee'}`, body);
@@ -481,6 +501,7 @@ function TimesheetApprovalPanel({
                 <th className="px-3 py-2">Date</th>
                 <th className="px-3 py-2">In / Out</th>
                 <th className="px-3 py-2">Hours</th>
+                <th className="px-3 py-2">Status</th>
                 <th className="px-3 py-2">ID</th>
               </tr>
             </thead>
@@ -494,6 +515,13 @@ function TimesheetApprovalPanel({
                   </td>
                   <td className="border-b border-slate-100 px-3 py-2 font-medium tabular-nums">
                     {typeof e.totalHours === 'number' ? e.totalHours.toFixed(2) : '—'}
+                  </td>
+                  <td className="border-b border-slate-100 px-3 py-2">
+                    {isClockInLate(e.clockIn, attendanceDayOverrides) ? (
+                      <span className="font-semibold text-rose-700">Late</span>
+                    ) : (
+                      <span className="text-emerald-700">On time</span>
+                    )}
                   </td>
                   <td className="border-b border-slate-100 px-3 py-2 font-mono text-[10px] text-slate-700">{idLine}</td>
                 </tr>

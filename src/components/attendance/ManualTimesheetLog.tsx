@@ -15,10 +15,13 @@ import { downloadExcelCsv, openAttendancePdfReport } from '@/lib/attendanceExpor
 import {
   COMPANY_SITE_OPTIONS,
   PROVIDER_ROLE_OPTIONS,
+  HR_PROVIDER_FILTER_OPTIONS,
   employeeDisplayId,
   siteBucketForUser,
   providerLabelForRole,
+  userMatchesAttendanceSearch,
 } from '@/lib/attendanceSite';
+import { filterManualTimeRequestsForViewer } from '@/lib/attendanceRules';
 import { Calendar, Building2, User as UserIcon, Shield, FileSpreadsheet, FileDown, X } from 'lucide-react';
 
 function escapeAttr(s: string) {
@@ -82,14 +85,28 @@ function buildManualGroups(requests: ManualTimeRequest[], users: User[]): Manual
 }
 
 export function ManualTimesheetLog() {
-  const { manualTimeRequests, users } = useStore(
-    useShallow((s) => ({ manualTimeRequests: s.manualTimeRequests, users: s.users }))
+  const { manualTimeRequests, users, currentUser } = useStore(
+    useShallow((s) => ({
+      manualTimeRequests: s.manualTimeRequests,
+      users: s.users,
+      currentUser: s.currentUser,
+    }))
   );
 
-  const allGroups = useMemo(() => buildManualGroups(manualTimeRequests, users), [manualTimeRequests, users]);
+  const scopedRequests = useMemo(
+    () => filterManualTimeRequestsForViewer(manualTimeRequests, users, currentUser),
+    [manualTimeRequests, users, currentUser]
+  );
+
+  const allGroups = useMemo(() => buildManualGroups(scopedRequests, users), [scopedRequests, users]);
 
   const sites = useMemo(() => [...COMPANY_SITE_OPTIONS], []);
-  const providers = useMemo(() => [...PROVIDER_ROLE_OPTIONS], []);
+  const providers = useMemo(() => {
+    if (currentUser?.role === 'HR') return [...HR_PROVIDER_FILTER_OPTIONS];
+    return [...PROVIDER_ROLE_OPTIONS];
+  }, [currentUser?.role]);
+
+  const isTeamLeaderViewer = currentUser?.role === 'Team Leader';
 
   const [siteFilter, setSiteFilter] = useState('All sites');
   const [providerFilter, setProviderFilter] = useState('All providers');
@@ -105,7 +122,6 @@ export function ManualTimesheetLog() {
   const resetPage = () => setPage(1);
 
   const filtered = useMemo(() => {
-    const q = idQuery.trim().toLowerCase();
     return allGroups.filter((g) => {
       const bucket = siteBucketForUser(g.user);
       if (siteFilter !== 'All sites' && bucket !== siteFilter) return false;
@@ -117,15 +133,7 @@ export function ManualTimesheetLog() {
         if (providerFilter === 'Team Leader' && pl !== 'Team Leader') return false;
       }
 
-      if (q && g.user) {
-        const idMatch =
-          g.user.id.toLowerCase().includes(q) ||
-          (g.user.employeeCode?.toLowerCase().includes(q) ?? false) ||
-          g.user.email.toLowerCase().includes(q);
-        if (!idMatch) return false;
-      } else if (q && !g.user) {
-        return false;
-      }
+      if (!userMatchesAttendanceSearch(g.user, g.userId, idQuery)) return false;
 
       if (rangeStart) {
         const rs = new Date(rangeStart);
@@ -240,6 +248,13 @@ export function ManualTimesheetLog() {
             rangeEnd={rangeEnd}
             setRangeEnd={setRangeEnd}
             onFilterChange={resetPage}
+            showSiteFilter={!isTeamLeaderViewer}
+            showProviderFilter={!isTeamLeaderViewer}
+            idSearchPlaceholder={
+              isTeamLeaderViewer
+                ? 'Team member — ID, code, or name'
+                : 'Unique ID, code, email, or name'
+            }
           />
         }
         actions={

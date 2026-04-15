@@ -21,9 +21,23 @@ import {
   Coffee,
   LayoutDashboard,
   ChevronRight,
+  ClipboardList,
+  MapPin,
 } from 'lucide-react';
+import { performClockInWithPolicies } from '@/lib/clockInPolicies';
+import { toast } from '@/lib/toast';
+import {
+  clockInBlockedBeforeOfficeStart,
+  dateKeyLocal,
+  dayAttendanceStatus,
+  filterUsersForAttendanceViewer,
+  getOfficeStartForDay,
+  isClockInLate,
+ type DayAttendanceUiStatus,
+} from '@/lib/attendanceRules';
 import { format, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay, subDays, isWithinInterval } from 'date-fns';
 import { useEffect, useState, useMemo } from 'react';
+import { cn } from '@/lib/utils';
 
 // ─── ROUTER ────────────────────────────────────────────────────────
 export default function Dashboard() {
@@ -65,19 +79,57 @@ function StatCard({
 }
 
 function TimerWidget() {
-  const { currentUser, timesheets, clockIn, clockOut, startBreak, endBreak } = useStore(
+  const {
+    currentUser,
+    timesheets,
+    clockOut,
+    startBreak,
+    endBreak,
+    adhocShiftsEnabled,
+    attendanceDayOverrides,
+    geoFencingEnabled,
+    geoFencingUseGlobalRadius,
+    geoFencingGlobalRadiusMiles,
+    geoFencingSiteRadiusMiles,
+    geoFencingOfficeLat,
+    geoFencingOfficeLng,
+  } = useStore(
     useShallow((s) => ({
       currentUser: s.currentUser,
       timesheets: s.timesheets,
-      clockIn: s.clockIn,
       clockOut: s.clockOut,
       startBreak: s.startBreak,
       endBreak: s.endBreak,
+      adhocShiftsEnabled: s.adhocShiftsEnabled,
+      attendanceDayOverrides: s.attendanceDayOverrides,
+      geoFencingEnabled: s.geoFencingEnabled,
+      geoFencingUseGlobalRadius: s.geoFencingUseGlobalRadius,
+      geoFencingGlobalRadiusMiles: s.geoFencingGlobalRadiusMiles,
+      geoFencingSiteRadiusMiles: s.geoFencingSiteRadiusMiles,
+      geoFencingOfficeLat: s.geoFencingOfficeLat,
+      geoFencingOfficeLng: s.geoFencingOfficeLng,
     }))
   );
   const activeTimesheet = timesheets.find(t => t.userId === currentUser?.id && !t.clockOut);
   const isClockedIn = !!activeTimesheet;
   const [now, setNow] = useState(new Date());
+  const [clockBusy, setClockBusy] = useState(false);
+
+  const clockInBlocked = !adhocShiftsEnabled && currentUser?.role !== 'Admin';
+  const beforeOfficeStartMsg =
+    currentUser?.role !== 'Admin'
+      ? clockInBlockedBeforeOfficeStart(now, attendanceDayOverrides)
+      : null;
+  const clockInDisabled = clockInBlocked || !!beforeOfficeStartMsg;
+  const geoRadiusMiles = (() => {
+    if (!geoFencingEnabled) return 0;
+    if (geoFencingUseGlobalRadius) return Math.max(0, geoFencingGlobalRadiusMiles);
+    const site = currentUser?.workSite?.trim();
+    if (site && geoFencingSiteRadiusMiles[site] != null) return Math.max(0, geoFencingSiteRadiusMiles[site]!);
+    return Math.max(0, geoFencingGlobalRadiusMiles);
+  })();
+  const geoNeedsOfficeAnchor =
+    geoFencingEnabled && geoRadiusMiles > 0 && (geoFencingOfficeLat == null || geoFencingOfficeLng == null);
 
   useEffect(() => {
     const interval = setInterval(() => setNow(new Date()), 1000);
@@ -181,17 +233,45 @@ function TimerWidget() {
             </div>
           </div>
 
-          <div className="shrink-0 flex items-center justify-center md:justify-end">
+          <div className="shrink-0 flex flex-col items-center justify-center gap-2 md:items-end">
+            {clockInBlocked && (
+              <p className="max-w-[14rem] text-center text-[11px] font-semibold text-rose-600 md:text-right">
+                Clock-in is turned off by your administrator.
+              </p>
+            )}
+            {!clockInBlocked && beforeOfficeStartMsg && (
+              <p className="max-w-[14rem] text-center text-[11px] font-semibold text-amber-800 md:text-right">
+                {beforeOfficeStartMsg}
+              </p>
+            )}
+            {geoNeedsOfficeAnchor && !clockInDisabled && (
+              <p className="max-w-[14rem] text-center text-[11px] font-medium text-amber-700 md:text-right">
+                Geo-fencing is on but the office anchor is not set — clock-in may be blocked until an admin completes
+                Time control settings.
+              </p>
+            )}
             {!isClockedIn ? (
               <button
-                onClick={clockIn}
-                className="group relative flex h-24 w-24 md:h-28 md:w-28 items-center justify-center rounded-full bg-blue-600 text-white shadow-lg shadow-blue-100 transition-all hover:bg-blue-500 active:scale-95 focus:outline-none ring-8 ring-blue-600/10"
-                title="Clock in"
+                type="button"
+                disabled={clockInDisabled || clockBusy}
+                onClick={async () => {
+                  setClockBusy(true);
+                  try {
+                    const res = await performClockInWithPolicies();
+                    if (!res.ok) toast(res.error, 'error');
+                  } finally {
+                    setClockBusy(false);
+                  }
+                }}
+                className="group relative flex h-24 w-24 md:h-28 md:w-28 items-center justify-center rounded-full bg-blue-600 text-white shadow-lg shadow-blue-100 transition-all hover:bg-blue-500 active:scale-95 focus:outline-none ring-8 ring-blue-600/10 disabled:cursor-not-allowed disabled:bg-slate-400 disabled:shadow-none disabled:hover:bg-slate-400"
+                title={clockInDisabled ? 'Clock-in disabled' : 'Clock in'}
               >
-                <div className="absolute inset-0 rounded-full bg-blue-400 opacity-20 blur-2xl transition-opacity group-hover:opacity-40" />
+                <div className="absolute inset-0 rounded-full bg-blue-400 opacity-20 blur-2xl transition-opacity group-hover:opacity-40 group-disabled:opacity-0" />
                 <div className="relative z-10 flex flex-col items-center">
                   <Play className="h-8 w-8 ml-0.5 drop-shadow" fill="currentColor" />
-                  <span className="mt-1 text-[10px] font-black uppercase tracking-widest">Clock In</span>
+                  <span className="mt-1 text-[10px] font-black uppercase tracking-widest">
+                    {clockBusy ? '…' : 'Clock In'}
+                  </span>
                 </div>
               </button>
             ) : (
@@ -245,8 +325,12 @@ function TimerWidget() {
 }
 
 function WeeklyChart() {
-  const { currentUser, timesheets } = useStore(
-    useShallow((s) => ({ currentUser: s.currentUser, timesheets: s.timesheets }))
+  const { currentUser, timesheets, attendanceDayOverrides } = useStore(
+    useShallow((s) => ({
+      currentUser: s.currentUser,
+      timesheets: s.timesheets,
+      attendanceDayOverrides: s.attendanceDayOverrides,
+    }))
   );
   const now = new Date();
   const [range, setRange] = useState<'7d' | '30d' | '90d'>('7d');
@@ -269,7 +353,7 @@ function WeeklyChart() {
       t => t.userId === currentUser?.id && isSameDay(new Date(t.clockIn), day)
     );
     const hours = dayEntries.reduce((acc, t) => acc + (t.totalHours || 0), 0);
-    const isLate = dayEntries.some(t => !!t.lateMark);
+    const isLate = dayEntries.some((t) => isClockInLate(t.clockIn, attendanceDayOverrides));
     return { day, label: range === '7d' ? format(day, 'EEE') : format(day, 'd MMM'), hours, isLate };
   });
 
@@ -376,7 +460,7 @@ function TaskList({ tasks }: { tasks: Task[] }) {
           {tasks.map(task => (
             <Link
               key={task.id}
-              href={`/schedule?taskId=${encodeURIComponent(task.id)}`}
+              href={`/project-manager?taskId=${encodeURIComponent(task.id)}`}
               className="block bg-white rounded-3xl shadow-sm border border-slate-100 p-6 hover:shadow-md transition-all group border-l-4 border-l-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-100"
             >
               <div className="flex justify-between items-start mb-4">
@@ -406,29 +490,116 @@ function TaskList({ tasks }: { tasks: Task[] }) {
 
 // ─── 1. ADMIN DASHBOARD ────────────────────────────────────────────
 function AdminDashboard() {
-  const { users, timesheets, tasks, Leave } = useStore(
+  const {
+    currentUser,
+    users,
+    timesheets,
+    tasks,
+    Leave,
+    manualTimeRequests,
+    adhocShiftsEnabled,
+    geoFencingEnabled,
+    geoFencingUseGlobalRadius,
+    geoFencingGlobalRadiusMiles,
+    geoFencingSiteRadiusMiles,
+    geoFencingOfficeLat,
+    geoFencingOfficeLng,
+    attendanceDayOverrides,
+  } = useStore(
     useShallow((s) => ({
+      currentUser: s.currentUser,
       users: s.users,
       timesheets: s.timesheets,
       tasks: s.tasks,
       Leave: s.Leave,
+      manualTimeRequests: s.manualTimeRequests,
+      adhocShiftsEnabled: s.adhocShiftsEnabled,
+      geoFencingEnabled: s.geoFencingEnabled,
+      geoFencingUseGlobalRadius: s.geoFencingUseGlobalRadius,
+      geoFencingGlobalRadiusMiles: s.geoFencingGlobalRadiusMiles,
+      geoFencingSiteRadiusMiles: s.geoFencingSiteRadiusMiles,
+      geoFencingOfficeLat: s.geoFencingOfficeLat,
+      geoFencingOfficeLng: s.geoFencingOfficeLng,
+      attendanceDayOverrides: s.attendanceDayOverrides,
     }))
   );
-  const now = new Date();
+
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   const activeEmployees = timesheets.filter(t => !t.clockOut).length;
   const pendingLeave = Leave.filter(l => l.status === 'Pending').length;
-  const overdueTasks = tasks.filter(
+  const pendingManual = manualTimeRequests.filter(r => r.status === 'Pending').length;
+  const overdueTasksCount = tasks.filter(
     t =>
       !isTeamLeaderCreatedTask(t, users) && t.status !== 'Approved' && new Date(t.deadline) < now
   ).length;
   const pendingUsers = users.filter(u => u.role === 'Pending User').length;
+
+  const needsAttentionItems = useMemo(() => {
+    const items: { label: string; count: number; href: string }[] = [];
+    if (pendingLeave > 0) items.push({ label: 'Pending leave requests', count: pendingLeave, href: '/request-management?tab=leave' });
+    if (pendingManual > 0)
+      items.push({ label: 'Pending manual time requests', count: pendingManual, href: '/request-management?tab=manual' });
+    if (pendingUsers > 0)
+      items.push({ label: 'Pending user registrations', count: pendingUsers, href: '/admin/employees-management' });
+    if (overdueTasksCount > 0)
+      items.push({ label: 'Overdue tasks', count: overdueTasksCount, href: '/project-manager' });
+    return items;
+  }, [pendingLeave, pendingManual, pendingUsers, overdueTasksCount]);
 
   const workforceUsers = useMemo(
     () => users.filter(u => u.role !== 'Pending User'),
     [users]
   );
   const workforceCount = workforceUsers.length;
+
+  const attendanceScopeUsers = useMemo(
+    () => filterUsersForAttendanceViewer(currentUser, users),
+    [currentUser, users]
+  );
+
+  const todayStatusCounts = useMemo(() => {
+    const counts: Record<DayAttendanceUiStatus, number> = { on_time: 0, late: 0, absent: 0, pending: 0 };
+    for (const u of attendanceScopeUsers) {
+      const s = dayAttendanceStatus(u.id, now, timesheets, now, attendanceDayOverrides);
+      counts[s] += 1;
+    }
+    return counts;
+  }, [attendanceScopeUsers, now, timesheets, attendanceDayOverrides]);
+
+  const effectiveGeoRadiusMiles = useMemo(() => {
+    if (!geoFencingEnabled) return 0;
+    if (geoFencingUseGlobalRadius) return Math.max(0, geoFencingGlobalRadiusMiles);
+    const vals = Object.values(geoFencingSiteRadiusMiles);
+    if (vals.length === 0) return Math.max(0, geoFencingGlobalRadiusMiles);
+    return Math.max(0, ...vals.map(v => (v != null ? v : 0)));
+  }, [
+    geoFencingEnabled,
+    geoFencingUseGlobalRadius,
+    geoFencingGlobalRadiusMiles,
+    geoFencingSiteRadiusMiles,
+  ]);
+
+  const geoAnchorMissing =
+    geoFencingEnabled &&
+    effectiveGeoRadiusMiles > 0 &&
+    (geoFencingOfficeLat == null || geoFencingOfficeLng == null);
+
+  const officeStartParts = getOfficeStartForDay(now, attendanceDayOverrides);
+  const officeStartToday = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    officeStartParts.hour,
+    officeStartParts.minute,
+    0,
+    0
+  );
+  const hasOverrideToday = !!attendanceDayOverrides[dateKeyLocal(now)];
 
   const availabilityClass = (status: string | undefined) =>
     status === 'Available'
@@ -439,25 +610,39 @@ function AdminDashboard() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-8 pb-12">
-      <div className="flex flex-col gap-6 border-b border-slate-200/80 pb-8 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex min-w-0 items-start gap-4">
-          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-md shadow-slate-900/15">
-            <LayoutDashboard className="h-6 w-6" strokeWidth={1.75} aria-hidden />
-          </span>
-          <div className="min-w-0">
-            <h1 className="text-3xl font-light tracking-tight text-slate-800">System overview</h1>
-            <p className="mt-2 max-w-xl text-sm leading-relaxed text-slate-500">
-              High-level workforce activity, leave and task pressure, and who is on the clock right now.
-            </p>
+      <div className="overflow-hidden rounded-[2rem] border border-slate-200/80 bg-gradient-to-br from-white via-slate-50/90 to-indigo-50/30 p-8 shadow-sm sm:rounded-[2.5rem]">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex min-w-0 items-start gap-4">
+            <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-lg shadow-slate-900/25 ring-4 ring-slate-900/5">
+              <LayoutDashboard className="h-7 w-7" strokeWidth={1.75} aria-hidden />
+            </span>
+            <div className="min-w-0 space-y-1">
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Admin</p>
+              <h1 className="text-3xl font-light tracking-tight text-slate-900">System overview</h1>
+              <p className="text-sm text-slate-500">
+                {format(now, 'EEEE, MMMM d, yyyy')}
+                <span className="mx-2 text-slate-300">·</span>
+                <span className="tabular-nums font-semibold text-slate-600">{format(now, 'h:mm a')}</span>
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2 lg:justify-end">
+            <Link
+              href="/timesheet"
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200/90 bg-white/80 px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm backdrop-blur-sm transition hover:border-slate-300 hover:bg-white"
+            >
+              <Clock className="h-4 w-4 text-slate-400" aria-hidden />
+              Timesheet
+            </Link>
+            <Link
+              href="/admin"
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-slate-900/20 transition hover:bg-slate-800"
+            >
+              Admin control
+              <ChevronRight className="h-4 w-4 opacity-80" aria-hidden />
+            </Link>
           </div>
         </div>
-        <Link
-          href="/admin"
-          className="inline-flex shrink-0 items-center justify-center gap-2 self-start rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-800 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-blue-100"
-        >
-          User administration
-          <ChevronRight className="h-4 w-4 text-slate-400" aria-hidden />
-        </Link>
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
@@ -470,26 +655,183 @@ function AdminDashboard() {
         />
         <StatCard icon={Activity} label="Active now" value={activeEmployees} color="text-emerald-500" bg="bg-emerald-50" />
         <StatCard icon={Calendar} label="Pending Leave" value={pendingLeave} color="text-amber-500" bg="bg-amber-50" />
-        <StatCard icon={AlertCircle} label="Overdue tasks" value={overdueTasks} color="text-rose-500" bg="bg-rose-50" />
+        <StatCard icon={AlertCircle} label="Overdue tasks" value={overdueTasksCount} color="text-rose-500" bg="bg-rose-50" />
         <StatCard icon={Shield} label="Pending approval" value={pendingUsers} color="text-purple-500" bg="bg-purple-50" />
       </div>
 
-      <div className="overflow-hidden rounded-[2rem] border border-slate-100 bg-white shadow-sm sm:rounded-[2.5rem]">
-        <div className="border-b border-slate-100 bg-slate-50/80 px-6 py-5 sm:px-8">
-          <h2 className="flex flex-wrap items-center gap-x-2 gap-y-1 text-lg font-bold text-slate-800">
-            <Activity className="h-5 w-5 shrink-0 text-blue-500" aria-hidden />
-            <span>Live employee status</span>
-            <span className="text-sm font-semibold text-slate-400">({workforceCount})</span>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <div className="overflow-hidden rounded-2xl border border-indigo-100/80 bg-gradient-to-br from-indigo-50/50 via-white to-white p-6 shadow-sm ring-1 ring-indigo-100/60">
+          <h2 className="flex items-center gap-2 text-base font-bold text-slate-900">
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-md shadow-indigo-200/50">
+              <ClipboardList className="h-4 w-4" aria-hidden />
+            </span>
+            Needs attention
           </h2>
-          <p className="mt-1 text-xs text-slate-500">
-            Availability from profiles; session reflects an open timesheet (clocked in).
-          </p>
+          <p className="mt-1 text-xs text-slate-500">Open items that need a decision or follow-up.</p>
+          {needsAttentionItems.length === 0 ? (
+            <div className="mt-6 flex flex-col items-center rounded-xl border border-dashed border-slate-200 bg-slate-50/50 py-10 text-center">
+              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
+                <CheckCircle2 className="h-6 w-6" aria-hidden />
+              </span>
+              <p className="mt-3 text-sm font-medium text-slate-700">All clear</p>
+              <p className="mt-0.5 text-xs text-slate-500">No pending admin actions right now.</p>
+            </div>
+          ) : (
+            <ul className="mt-5 space-y-2">
+              {needsAttentionItems.map((row) => (
+                <li key={row.href}>
+                  <Link
+                    href={row.href}
+                    className="group flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-white/90 px-4 py-3.5 text-sm font-medium text-slate-800 shadow-sm transition hover:border-indigo-200 hover:bg-white hover:shadow-md"
+                  >
+                    <span className="min-w-0">{row.label}</span>
+                    <span className="flex shrink-0 items-center gap-2">
+                      <span className="rounded-full bg-indigo-100 px-2.5 py-0.5 text-xs font-bold tabular-nums text-indigo-800">
+                        {row.count}
+                      </span>
+                      <ChevronRight className="h-4 w-4 text-slate-400 transition group-hover:translate-x-0.5 group-hover:text-indigo-600" aria-hidden />
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="overflow-hidden rounded-2xl border border-sky-100/80 bg-gradient-to-br from-sky-50/40 via-white to-white p-6 shadow-sm ring-1 ring-sky-100/50">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="flex items-center gap-2 text-base font-bold text-slate-900">
+                <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-sky-600 text-white shadow-md shadow-sky-200/50">
+                  <Calendar className="h-4 w-4" aria-hidden />
+                </span>
+                Today&apos;s attendance
+              </h2>
+              <p className="mt-1 text-xs text-slate-500">
+                Rolled up from company rules · {attendanceScopeUsers.length} staff in scope
+              </p>
+            </div>
+            <Link
+              href="/timesheet"
+              className="inline-flex shrink-0 items-center gap-1 self-start rounded-lg bg-sky-600/10 px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-sky-800 transition hover:bg-sky-600/15"
+            >
+              View timesheet
+              <ChevronRight className="h-3.5 w-3.5" aria-hidden />
+            </Link>
+          </div>
+          <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {(
+              [
+                { key: 'on_time' as const, label: 'On time', className: 'border-emerald-100 bg-emerald-50/60 text-emerald-900' },
+                { key: 'late' as const, label: 'Late', className: 'border-amber-100 bg-amber-50/60 text-amber-900' },
+                { key: 'absent' as const, label: 'Absent', className: 'border-rose-100 bg-rose-50/60 text-rose-900' },
+                { key: 'pending' as const, label: 'Pending', className: 'border-slate-200 bg-slate-50/80 text-slate-800' },
+              ] as const
+            ).map(({ key, label, className }) => (
+              <div
+                key={key}
+                className={cn('rounded-xl border px-3 py-3 text-center shadow-sm', className)}
+              >
+                <p className="text-2xl font-black tabular-nums tracking-tight">{todayStatusCounts[key]}</p>
+                <p className="mt-1 text-[10px] font-bold uppercase tracking-widest opacity-80">{label}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border border-amber-100/80 bg-gradient-to-br from-amber-50/30 via-white to-white p-6 shadow-sm ring-1 ring-amber-100/40">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0 flex-1 space-y-4">
+            <div>
+              <h2 className="flex items-center gap-2 text-base font-bold text-slate-900">
+                <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-500 text-white shadow-md shadow-amber-200/50">
+                  <Timer className="h-4 w-4" aria-hidden />
+                </span>
+                Time policies
+              </h2>
+              <p className="mt-1 text-xs text-slate-500">What staff see when they clock in. Edit in Time control.</p>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-1 md:grid-cols-3">
+              <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-100 bg-white/80 px-4 py-3 shadow-sm">
+                <span className="text-xs font-bold uppercase tracking-widest text-slate-400">Shifts</span>
+                <span
+                  className={cn(
+                    'rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide',
+                    adhocShiftsEnabled
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : 'bg-rose-100 text-rose-800'
+                  )}
+                >
+                  {adhocShiftsEnabled ? 'Enabled' : 'Disabled'}
+                </span>
+              </div>
+              <div className="flex flex-col gap-1 rounded-xl border border-slate-100 bg-white/80 px-4 py-3 shadow-sm sm:col-span-1 md:col-span-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-slate-400">
+                    <MapPin className="h-3.5 w-3.5" aria-hidden />
+                    Geo
+                  </span>
+                  <span
+                    className={cn(
+                      'rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide',
+                      geoFencingEnabled ? 'bg-sky-100 text-sky-900' : 'bg-slate-100 text-slate-600'
+                    )}
+                  >
+                    {geoFencingEnabled ? 'On' : 'Off'}
+                  </span>
+                </div>
+                {geoFencingEnabled && geoAnchorMissing ? (
+                  <p className="text-[11px] font-medium leading-snug text-amber-800">
+                    Office anchor missing — clock-in may be blocked.
+                  </p>
+                ) : null}
+              </div>
+              <div className="rounded-xl border border-slate-100 bg-white/80 px-4 py-3 shadow-sm">
+                <span className="text-xs font-bold uppercase tracking-widest text-slate-400">Office start</span>
+                <p className="mt-1 text-lg font-bold tabular-nums text-slate-900">{format(officeStartToday, 'h:mm a')}</p>
+                {hasOverrideToday ? (
+                  <p className="mt-1 text-[10px] font-bold uppercase tracking-wide text-indigo-700">Company override today</p>
+                ) : (
+                  <p className="mt-1 text-[10px] text-slate-400">Default or scheduled</p>
+                )}
+              </div>
+            </div>
+          </div>
+          <Link
+            href="/admin/time-control"
+            className="inline-flex shrink-0 items-center justify-center gap-2 self-stretch rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-amber-200/40 transition hover:from-amber-600 hover:to-orange-700 lg:self-start"
+          >
+            Time control
+            <ChevronRight className="h-4 w-4" aria-hidden />
+          </Link>
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-[2rem] border border-slate-200/80 bg-white shadow-md shadow-slate-200/30 sm:rounded-[2.5rem]">
+        <div className="border-b border-slate-100 bg-gradient-to-r from-slate-50/90 to-white px-6 py-5 sm:px-8">
+          <h2 className="flex flex-wrap items-center gap-x-2 gap-y-1 text-lg font-bold text-slate-800">
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-600 text-white shadow-md shadow-blue-200/40">
+              <Activity className="h-4 w-4" aria-hidden />
+            </span>
+            <span>Live employee status</span>
+            <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-bold tabular-nums text-slate-600">
+              {workforceCount}
+            </span>
+          </h2>
+          <p className="mt-1 text-xs text-slate-500">Availability and active clock-in session.</p>
         </div>
 
         {workforceCount === 0 ? (
           <div className="px-6 py-16 text-center sm:px-8">
             <p className="text-sm font-medium text-slate-600">No active workforce users yet.</p>
-            <p className="mt-1 text-xs text-slate-400">Approve pending registrations or add users from User administration.</p>
+            <p className="mt-1 text-xs text-slate-400">
+              Approve pending registrations or add users from{' '}
+              <Link href="/admin" className="font-semibold text-blue-600 hover:underline">
+                Admin control
+              </Link>
+              .
+            </p>
           </div>
         ) : (
           <>
