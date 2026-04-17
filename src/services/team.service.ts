@@ -1,7 +1,7 @@
 import { API_PATHS } from '@/lib/api/api-base-urls';
 import { apiDelete, apiGet, apiPost } from '@/lib/api/axios-request-handler';
-import type { User } from '@/lib/store';
-import { fetchAllUsersForAdmin, mapAdminUserRowToStoreUser } from '@/services/admin.service';
+import type { Department, User } from '@/lib/store';
+import { dbRoleToFrontendRole, fetchAllUsersForAdmin, mapAdminUserRowToStoreUser } from '@/services/admin.service';
 
 export type TeamRow = {
   id: number;
@@ -95,6 +95,48 @@ export async function findTwoTeamRowsByName(
 }
 
 /** Admin directory users: `team` + roster `workSite` from `teams` (name + department on `teams` row). */
+export type TeamRosterMemberRow = {
+  id: number;
+  name: string;
+  email: string;
+  role: string;
+  department?: string | null;
+  gdc_id?: string | null;
+  profile_image?: string | null;
+};
+
+export type MyTeamRosterResponse = {
+  success: boolean;
+  team_name: string | null;
+  work_site: string | null;
+  members: TeamRosterMemberRow[];
+};
+
+/** Maps API roster row → store user (shared `team` / `workSite` from roster response). */
+export function mapRosterMemberToStoreUser(
+  row: TeamRosterMemberRow,
+  teamName: string | null,
+  workSite: string | null
+): User {
+  const tn = teamName?.trim();
+  const ws = workSite?.trim();
+  return {
+    id: String(row.id),
+    name: row.name ?? '',
+    email: row.email ?? '',
+    role: dbRoleToFrontendRole(row.role),
+    team: tn || undefined,
+    workSite: ws || undefined,
+    department: row.department ? (row.department as Department) : undefined,
+    employeeCode: row.gdc_id ?? undefined,
+    avatar: row.profile_image ?? undefined,
+  };
+}
+
+export async function fetchMyTeamRoster(): Promise<MyTeamRosterResponse> {
+  return apiGet<MyTeamRosterResponse>(API_PATHS.teams.myTeamRoster);
+}
+
 export async function buildUsersWithResolvedTeams(): Promise<User[]> {
   const [teamsRes, usersRes] = await Promise.all([getTeamsApi(), fetchAllUsersForAdmin()]);
   const idToMeta = new Map<number, { name: string; department: string }>();

@@ -1,0 +1,40 @@
+import axios, { AxiosHeaders, type AxiosInstance, type InternalAxiosRequestConfig } from 'axios';
+import Cookies from 'js-cookie';
+import { ACCESS_TOKEN_COOKIE } from '@/lib/api/axios.config';
+
+/** Local dev only when `NEXT_PUBLIC_TASK_API_URL` is unset. Production must set the env var (e.g. Render HTTPS URL). */
+const DEFAULT_TASK_DEV = 'http://localhost:5001';
+
+function resolveTaskBaseURL(): string {
+  const raw = process.env.NEXT_PUBLIC_TASK_API_URL?.trim() ?? '';
+  const normalized = raw.replace(/\/$/, '');
+  if (normalized) return normalized;
+  if (process.env.NODE_ENV === 'production') {
+    console.error(
+      '[task-api] NEXT_PUBLIC_TASK_API_URL is missing. On Vercel add it: https://taskmanagment-backend-34i7.onrender.com (no trailing slash).'
+    );
+  } else {
+    console.warn(
+      `[task-api] NEXT_PUBLIC_TASK_API_URL is unset — using ${DEFAULT_TASK_DEV}. For deployed task API set .env.local, e.g. https://taskmanagment-backend-34i7.onrender.com`
+    );
+  }
+  return DEFAULT_TASK_DEV;
+}
+
+function attachAuth(config: InternalAxiosRequestConfig): InternalAxiosRequestConfig {
+  const headers = AxiosHeaders.from(config.headers ?? {});
+  const token = Cookies.get(ACCESS_TOKEN_COOKIE);
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  if (config.data instanceof FormData) headers.delete('Content-Type');
+  config.headers = headers;
+  return config;
+}
+
+/** Axios client for `taskmanagment-backend` (separate from main GDC auth API). */
+export const taskApiClient: AxiosInstance = axios.create({
+  baseURL: resolveTaskBaseURL(),
+  timeout: 120_000,
+  withCredentials: true,
+});
+
+taskApiClient.interceptors.request.use((config) => attachAuth(config), (e) => Promise.reject(e));

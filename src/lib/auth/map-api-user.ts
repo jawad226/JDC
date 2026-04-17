@@ -15,6 +15,8 @@ function asRole(value: string): Role {
 }
 
 export function mapLoginUserToStore(dto: AuthLoginUserDto): User {
+  const tn = dto.team_name?.trim();
+  const ws = dto.work_site?.trim();
   return {
     id: dto.id,
     name: dto.name,
@@ -24,10 +26,14 @@ export function mapLoginUserToStore(dto: AuthLoginUserDto): User {
     phone: dto.phone ?? undefined,
     employeeCode: dto.gdc_id ?? undefined,
     avatar: dto.avatar ?? undefined,
+    ...(tn ? { team: tn } : {}),
+    ...(ws ? { workSite: ws } : {}),
   };
 }
 
 export function mapProfileToStoreUser(profile: UserProfileDto, id: string, role: Role): User {
+  const tn = profile.team_name?.trim();
+  const ws = profile.work_site?.trim();
   return {
     id,
     name: profile.name,
@@ -39,5 +45,7 @@ export function mapProfileToStoreUser(profile: UserProfileDto, id: string, role:
     cnic: profile.cnic ?? undefined,
     address: profile.address ?? undefined,
     avatar: profile.profile_image ?? undefined,
+    ...(tn ? { team: tn } : {}),
+    ...(ws ? { workSite: ws } : {}),
   };
 }

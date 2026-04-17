@@ -21,13 +21,25 @@ import {
   ArrowRightCircle,
   Paperclip,
   Clock,
+  ChevronLeft,
+  ChevronRight,
+  Search,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { isAxiosError } from 'axios';
 import { useSearchParams } from 'next/navigation';
 import { TaskWorkElapsed } from '@/components/tasks/TaskWorkElapsed';
-import { filterTaskHistoryLastDays, getCurrentInProgressStartedAtIso } from '@/lib/taskWorkTimer';
-import { useStore, useShallow, getManagementTaskDisplayStatus, isTeamLeaderCreatedTask } from '@/lib/store';
-import type { Task, TaskHistoryEntry, TaskPriority, TaskWorkflowStatus, Role } from '@/lib/store';
+import { getLatestSubmitNote } from '@/lib/task-submit-note';
+import { getCurrentInProgressStartedAtIso } from '@/lib/taskWorkTimer';
+import { fetchTasksPageFromApi } from '@/services/tasks.service';
+import {
+  useStore,
+  useShallow,
+  getManagementTaskDisplayStatus,
+  isAdminCreatedTask,
+  isTeamLeaderCreatedTask,
+} from '@/lib/store';
+import type { Task, TaskWorkflowStatus, Role } from '@/lib/store';
 import { format } from 'date-fns';
 
 import { MAX_UPLOAD_FILE_BYTES, MAX_UPLOAD_FILE_MB } from '@/lib/file-upload-limits';
@@ -50,11 +62,28 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+function taskApiErr(e: unknown): string {
+  if (
+    isAxiosError(e) &&
+    e.response?.data &&
+    typeof e.response.data === 'object' &&
+    e.response.data !== null &&
+    'message' in e.response.data
+  ) {
+    return String((e.response.data as { message: unknown }).message);
+  }
+  if (e instanceof Error) return e.message;
+  return 'Request failed';
+}
+
 function deadlineToIso(dateYmd: string): string {
   return new Date(`${dateYmd}T12:00:00`).toISOString();
 }
 
 type StatusFilter = 'All' | TaskWorkflowStatus;
+
+const PROJECT_MANAGER_PAGE_SIZE = 6; // 2 rows (3 columns on lg)
+const PROJECT_MANAGER_PAGE_SIZE_OPTIONS = [6, 12, 18] as const;
 
 export default function TasksPage() {
   const searchParams = useSearchParams();
@@ -71,6 +100,7 @@ export default function TasksPage() {
     deletePendingTask,
     updatePendingTask,
     forwardTaskToTeamLeader,
+    refreshTasksFromApi,
   } = useStore(
     useShallow((s) => ({
       tasks: s.tasks,
@@ -85,6 +115,7 @@ export default function TasksPage() {
       approveTask: s.approveTask,
       deletePendingTask: s.deletePendingTask,
       updatePendingTask: s.updatePendingTask,
+      refreshTasksFromApi: s.refreshTasksFromApi,
     }))
   );
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -95,11 +126,27 @@ export default function TasksPage() {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [assignedTo, setAssignedTo] = useState('');
-  const [priority, setPriority] = useState<TaskPriority>('Medium');
   const [deadline, setDeadline] = useState('');
   const [createAttachmentFile, setCreateAttachmentFile] = useState<File | null>(null);
   const [attachmentError, setAttachmentError] = useState('');
   const [isCreatingTask, setIsCreatingTask] = useState(false);
+  const [pmPage, setPmPage] = useState(1);
+  const [pmPageSize, setPmPageSize] = useState<(typeof PROJECT_MANAGER_PAGE_SIZE_OPTIONS)[number]>(
+    PROJECT_MANAGER_PAGE_SIZE
+  );
+  const [pmSearch, setPmSearch] = useState('');
+  const [pmFrom, setPmFrom] = useState(''); // YYYY-MM-DD (deadline)
+  const [pmTo, setPmTo] = useState(''); // YYYY-MM-DD (deadline)
+  const [pmDateOpen, setPmDateOpen] = useState(false);
+  const pmDatePopoverRef = useRef<HTMLDivElement>(null);
+  const [pmListTasks, setPmListTasks] = useState<Task[]>([]);
+  const [pmListPagination, setPmListPagination] = useState<{
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  }>({ page: 1, pageSize: PROJECT_MANAGER_PAGE_SIZE, total: 0, totalPages: 1 });
+  const [pmListLoading, setPmListLoading] = useState(false);
   const createFileInputRef = useRef<HTMLInputElement>(null);
 
   const [confirmAction, setConfirmAction] = useState<{
@@ -127,12 +174,40 @@ export default function TasksPage() {
   }, [searchParams, allTasks, currentUser, users]);
 
   useEffect(() => {
+    if (!pmDateOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPmDateOpen(false);
+    };
+    const onDown = (e: MouseEvent) => {
+      const el = pmDatePopoverRef.current;
+      if (!el) return;
+      if (e.target instanceof Node && !el.contains(e.target)) setPmDateOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('mousedown', onDown);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('mousedown', onDown);
+    };
+  }, [pmDateOpen]);
+
+  useEffect(() => {
     setForwardTlId('');
   }, [selectedTaskId]);
 
   useEffect(() => {
     setSubmitNote('');
   }, [selectedTaskId]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    void refreshTasksFromApi();
+    const onVis = () => {
+      if (document.visibilityState === 'visible') void refreshTasksFromApi();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [currentUser?.id, refreshTasksFromApi]);
 
   const canCreateTask =
     currentUser?.role === 'Admin' || currentUser?.role === 'Team Leader';
@@ -164,11 +239,50 @@ export default function TasksPage() {
     return t.status === statusFilter;
   };
 
-  const filteredTasks = useMemo(() => {
-    const list =
-      statusFilter === 'All' ? tasks : tasks.filter(t => matchesStatusFilter(t, currentUser?.role));
-    return [...list].sort((a, b) => new Date(a.deadline).getTime() - new Date(b.deadline).getTime());
-  }, [tasks, statusFilter, currentUser?.role, users]);
+  const apiStatus = useMemo(() => {
+    if (statusFilter === 'All') return undefined;
+    if (statusFilter === 'Pending') return 'pending' as const;
+    if (statusFilter === 'In Progress') return 'in_progress' as const;
+    if (statusFilter === 'Submitted') return 'submitted' as const;
+    if (statusFilter === 'Review') return 'review' as const;
+    if (statusFilter === 'Approved') return 'approved' as const;
+    return undefined;
+  }, [statusFilter]);
+
+  useEffect(() => {
+    setPmPage(1);
+  }, [statusFilter, pmPageSize, pmSearch, pmFrom, pmTo]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    let cancelled = false;
+    void (async () => {
+      setPmListLoading(true);
+      try {
+        const qTrim = pmSearch.trim();
+        const res = await fetchTasksPageFromApi({
+          page: pmPage,
+          pageSize: pmPageSize,
+          status: apiStatus,
+          q: qTrim || undefined,
+          from: pmFrom || undefined,
+          to: pmTo || undefined,
+        });
+        if (cancelled) return;
+        setPmListTasks(res.tasks);
+        setPmListPagination(res.pagination);
+      } catch {
+        if (cancelled) return;
+        setPmListTasks([]);
+        setPmListPagination({ page: pmPage, pageSize: pmPageSize, total: 0, totalPages: 1 });
+      } finally {
+        if (!cancelled) setPmListLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.id, pmPage, pmPageSize, apiStatus, pmSearch, pmFrom, pmTo]);
 
   const selectedTask = useMemo(() => {
     if (!selectedTaskId) return null;
@@ -182,6 +296,11 @@ export default function TasksPage() {
       return null;
     return task;
   }, [allTasks, selectedTaskId, currentUser, users]);
+
+  const selectedTaskSubmitNote = useMemo(
+    () => (selectedTask ? getLatestSubmitNote(selectedTask) : null),
+    [selectedTask]
+  );
 
   const teamEmployeesForTl = useMemo(() => {
     if (!currentUser?.team) return [];
@@ -224,7 +343,9 @@ export default function TasksPage() {
     const assignee = users.find(u => u.id === task.assignedTo);
     if (currentUser.role === 'Admin') return !isTeamLeaderCreatedTask(task, users);
     if (currentUser.role === 'HR') {
-      return assignee?.role === 'HR' && task.assignedTo === currentUser.id;
+      if (!(assignee?.role === 'HR' && task.assignedTo === currentUser.id)) return false;
+      if (isAdminCreatedTask(task, users)) return false;
+      return true;
     }
     if (currentUser.role === 'Team Leader') {
       if (task.assignedBy !== currentUser.id) return false;
@@ -246,7 +367,6 @@ export default function TasksPage() {
     setTitle('');
     setDescription('');
     setAssignedTo('');
-    setPriority('Medium');
     setDeadline('');
     setCreateAttachmentFile(null);
     setAttachmentError('');
@@ -266,7 +386,6 @@ export default function TasksPage() {
     setTitle(task.title);
     setDescription(task.description);
     setAssignedTo(task.assignedTo);
-    setPriority(task.priority);
     setDeadline(format(new Date(task.deadline), 'yyyy-MM-dd'));
     setCreateAttachmentFile(null);
     setAttachmentError('');
@@ -307,16 +426,22 @@ export default function TasksPage() {
     if (!currentUser) return;
     if (editTaskId) {
       if (!editFormReady) return;
-      updatePendingTask(editTaskId, {
-        title: title.trim(),
-        description,
-        assignedTo,
-        priority,
-        deadline: deadlineToIso(deadline),
-      });
-      setEditTaskId(null);
-      resetTaskForm();
-      toast('Task Updated Successfully', 'success');
+      try {
+        await updatePendingTask(editTaskId, {
+          title: title.trim(),
+          description,
+          assignedTo,
+          deadline: deadlineToIso(deadline),
+        });
+        setEditTaskId(null);
+        resetTaskForm();
+        toast('Task Updated Successfully', 'success');
+      } catch (e) {
+        const msg = isAxiosError(e)
+          ? String((e.response?.data as { message?: string })?.message ?? e.message)
+          : 'Update failed';
+        toast(msg, 'error');
+      }
       return;
     }
 
@@ -324,7 +449,7 @@ export default function TasksPage() {
     setIsCreatingTask(true);
     try {
       const dataUrl = await readFileAsDataUrl(createAttachmentFile);
-      createTask({
+      await createTask({
         title: title.trim(),
         description: description.trim() || undefined,
         assignedTo,
@@ -338,8 +463,13 @@ export default function TasksPage() {
       setIsCreateModalOpen(false);
       resetTaskForm();
       toast('Task Created Successfully', 'success');
-    } catch {
-      setAttachmentError('Could not read the file. Try another file.');
+    } catch (e) {
+      if (isAxiosError(e)) {
+        const msg = String((e.response?.data as { message?: string })?.message ?? e.message);
+        toast(msg || 'Create failed', 'error');
+      } else {
+        setAttachmentError('Could not read the file. Try another file.');
+      }
     } finally {
       setIsCreatingTask(false);
     }
@@ -364,18 +494,6 @@ export default function TasksPage() {
     if (status === 'Rejected') return 'bg-rose-50 text-rose-700 border-rose-100';
     return 'bg-slate-50 text-slate-700 border-slate-100';
   };
-
-  const historyForSelected = useMemo(
-    () => filterTaskHistoryLastDays(selectedTask?.history, 7, new Date()),
-    [selectedTask]
-  );
-
-  const hasHistoryOlderThan7Days = useMemo(() => {
-    const h = selectedTask?.history;
-    if (!h?.length) return false;
-    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    return h.some(e => new Date(e.at).getTime() < cutoff);
-  }, [selectedTask]);
 
   const reviewerCanActOnTask = (task: Task | null) => {
     if (!task || !currentUser) return false;
@@ -437,6 +555,15 @@ export default function TasksPage() {
   const taskRefLabel = (id: string) =>
     `(TASK-${id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase()})`;
 
+  const deadlineLabel = useMemo(() => {
+    const from = pmFrom ? new Date(`${pmFrom}T12:00:00`) : null;
+    const to = pmTo ? new Date(`${pmTo}T12:00:00`) : null;
+    if (!from && !to) return 'Select range';
+    if (from && !to) return `${format(from, 'MMM d, yyyy')} — …`;
+    if (!from && to) return `… — ${format(to, 'MMM d, yyyy')}`;
+    return `${format(from!, 'MMM d, yyyy')} — ${format(to!, 'MMM d, yyyy')}`;
+  }, [pmFrom, pmTo]);
+
   return (
     <div className="max-w-6xl mx-auto">
       <div className="mb-8">
@@ -446,47 +573,163 @@ export default function TasksPage() {
         </h1>
       </div>
 
-      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-wrap items-center gap-3">
-          <label htmlFor="task-status-filter" className="text-sm font-semibold text-slate-600">
-            Status
-          </label>
-          <select
-            id="task-status-filter"
-            value={statusFilter}
-            onChange={e => setStatusFilter(e.target.value as StatusFilter)}
-            className="min-w-[11rem] rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
-          >
-            {filterOptions.map(o => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
+      <div className="mb-5 rounded-xl border border-slate-200/90 bg-white p-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)] ring-1 ring-slate-900/[0.02]">
+        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-[minmax(140px,180px)_minmax(220px,1fr)_minmax(180px,1fr)_auto] xl:items-end xl:gap-3">
+          <div className="space-y-1">
+            <label
+              htmlFor="task-status-filter"
+              className="block text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500"
+            >
+              Status
+            </label>
+            <select
+              id="task-status-filter"
+              value={statusFilter}
+              onChange={e => setStatusFilter(e.target.value as StatusFilter)}
+              className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50/40 px-2.5 text-xs font-semibold text-slate-900 shadow-none outline-none transition hover:border-slate-300 hover:bg-white focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-500/15"
+            >
+              {filterOptions.map(o => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Deadline</span>
+            <div className="relative" ref={pmDatePopoverRef}>
+              <button
+                type="button"
+                onClick={() => setPmDateOpen((v) => !v)}
+                className="inline-flex h-9 w-full min-w-0 items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50/40 px-2.5 text-left text-xs font-semibold text-slate-900 shadow-none transition hover:border-slate-300 hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/15"
+                aria-expanded={pmDateOpen}
+              >
+                <span
+                  className={`min-w-0 flex-1 truncate ${pmFrom || pmTo ? 'text-slate-900' : 'text-slate-500'}`}
+                >
+                  {deadlineLabel}
+                </span>
+                <CalendarDays className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden />
+              </button>
+
+              {pmDateOpen ? (
+                <div className="absolute left-0 top-[calc(100%+0.35rem)] z-30 w-[min(100vw-2rem,20.5rem)] rounded-xl border border-slate-200 bg-white p-3 shadow-lg shadow-slate-200/60 ring-1 ring-slate-900/5">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Deadline range</p>
+                    <button
+                      type="button"
+                      onClick={() => setPmDateOpen(false)}
+                      className="rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                      aria-label="Close date filter"
+                    >
+                      <X className="h-3.5 w-3.5" aria-hidden />
+                    </button>
+                  </div>
+
+                  <div className="mt-2.5 grid grid-cols-2 gap-2">
+                    <label className="space-y-1">
+                      <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">From</span>
+                      <input
+                        type="date"
+                        value={pmFrom}
+                        max={pmTo || undefined}
+                        onChange={(e) => setPmFrom(e.target.value)}
+                        className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-800 outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/15"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">To</span>
+                      <input
+                        type="date"
+                        value={pmTo}
+                        min={pmFrom || undefined}
+                        onChange={(e) => setPmTo(e.target.value)}
+                        className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-800 outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/15"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="mt-3 flex items-center justify-end gap-2 border-t border-slate-100 pt-2.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPmFrom('');
+                        setPmTo('');
+                      }}
+                      className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                    >
+                      Clear
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPmDateOpen(false)}
+                      className="h-8 rounded-lg bg-indigo-600 px-3 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-700"
+                    >
+                      Apply
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="space-y-1 sm:col-span-2 xl:col-span-1">
+            <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Search</span>
+            <div className="relative">
+              <Search
+                className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
+                aria-hidden
+              />
+              <input
+                type="search"
+                value={pmSearch}
+                onChange={(e) => setPmSearch(e.target.value)}
+                placeholder="Project name…"
+                className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50/40 py-0 pl-8 pr-8 text-xs font-semibold text-slate-900 shadow-none outline-none transition placeholder:font-medium placeholder:text-slate-400 hover:border-slate-300 hover:bg-white focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-500/15"
+              />
+              {pmSearch.trim() ? (
+                <button
+                  type="button"
+                  onClick={() => setPmSearch('')}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                  aria-label="Clear search"
+                >
+                  <X className="h-3.5 w-3.5" aria-hidden />
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          {canCreateTask ? (
+            <button
+              type="button"
+              onClick={() => {
+                setEditTaskId(null);
+                resetTaskForm();
+                setIsCreateModalOpen(true);
+              }}
+              className="inline-flex h-9 w-full shrink-0 items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 text-xs font-semibold text-white shadow-sm shadow-blue-900/10 transition hover:bg-blue-700 active:scale-[0.98] sm:col-span-2 xl:col-span-1 xl:w-auto xl:self-end"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add
+            </button>
+          ) : null}
         </div>
-        {canCreateTask && (
-          <button
-            type="button"
-            onClick={() => {
-              setEditTaskId(null);
-              resetTaskForm();
-              setIsCreateModalOpen(true);
-            }}
-            className="inline-flex w-fit items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-blue-700 active:scale-[0.98]"
-          >
-            <Plus className="h-4 w-4" />
-            Add
-          </button>
-        )}
       </div>
 
-      {filteredTasks.length === 0 ? (
+      {pmListLoading ? (
+        <div className="rounded-2xl border border-slate-200 bg-white py-14 text-center text-slate-500">
+          Loading tasks…
+        </div>
+      ) : pmListTasks.length === 0 ? (
         <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50/50 py-16 text-center text-slate-500">
           No tasks match this filter.
         </div>
       ) : (
+        <>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {filteredTasks.map(task => {
+          {pmListTasks.map(task => {
             const assignee = users.find(u => u.id === task.assignedTo);
             const dl = new Date(task.deadline);
             const deptOrTeam = assignee?.department ?? assignee?.team ?? '—';
@@ -563,9 +806,15 @@ export default function TasksPage() {
                         message: 'Delete this pending task? This cannot be undone.',
                         confirmLabel: 'Delete',
                         onConfirm: () => {
-                          deletePendingTask(task.id);
-                          setConfirmAction(null);
-                          toast('Task deleted.', 'info');
+                          void (async () => {
+                            try {
+                              await deletePendingTask(task.id);
+                              setConfirmAction(null);
+                              toast('Task deleted.', 'info');
+                            } catch (e) {
+                              toast(taskApiErr(e), 'error');
+                            }
+                          })();
                         },
                       });
                     }}
@@ -578,6 +827,62 @@ export default function TasksPage() {
             );
           })}
         </div>
+        {pmListPagination.totalPages > 1 ? (
+          <div className="mt-6 flex flex-col gap-3 rounded-2xl border border-slate-200 bg-slate-50/90 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-col items-center gap-2 sm:flex-row sm:gap-4">
+              <div className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                <span>Rows per page:</span>
+                <select
+                  value={pmPageSize}
+                  onChange={(e) =>
+                    setPmPageSize(Number(e.target.value) as (typeof PROJECT_MANAGER_PAGE_SIZE_OPTIONS)[number])
+                  }
+                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm font-semibold text-slate-800 shadow-sm outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
+                >
+                  {PROJECT_MANAGER_PAGE_SIZE_OPTIONS.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <p className="text-sm text-slate-600">
+                <span className="font-bold tabular-nums text-slate-900">
+                  {pmListPagination.total === 0 ? 0 : (pmListPagination.page - 1) * pmListPagination.pageSize + 1}
+                </span>
+                –
+                <span className="font-bold tabular-nums text-slate-900">
+                  {Math.min(pmListPagination.page * pmListPagination.pageSize, pmListPagination.total)}
+                </span>{' '}
+                of <span className="font-bold tabular-nums text-slate-900">{pmListPagination.total}</span>
+              </p>
+            </div>
+            <div className="flex items-center justify-center gap-2">
+              <button
+                type="button"
+                disabled={pmPage <= 1}
+                onClick={() => setPmPage(p => Math.max(1, p - 1))}
+                className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ChevronLeft className="h-4 w-4" aria-hidden />
+                Previous
+              </button>
+              <span className="px-2 text-sm font-semibold text-slate-500 tabular-nums">
+                Page {pmPage} / {pmListPagination.totalPages}
+              </span>
+              <button
+                type="button"
+                disabled={pmPage >= pmListPagination.totalPages}
+                onClick={() => setPmPage(p => Math.min(pmListPagination.totalPages, p + 1))}
+                className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Next
+                <ChevronRight className="h-4 w-4" aria-hidden />
+              </button>
+            </div>
+          </div>
+        ) : null}
+        </>
       )}
 
       {/* Create / Edit Task Modal */}
@@ -828,10 +1133,16 @@ export default function TasksPage() {
                         message: 'Delete this pending task? This cannot be undone.',
                         confirmLabel: 'Delete',
                         onConfirm: () => {
-                          deletePendingTask(selectedTask.id);
-                          setSelectedTaskId(null);
-                          setConfirmAction(null);
-                          toast('Task deleted.', 'info');
+                          void (async () => {
+                            try {
+                              await deletePendingTask(selectedTask.id);
+                              setSelectedTaskId(null);
+                              setConfirmAction(null);
+                              toast('Task deleted.', 'info');
+                            } catch (e) {
+                              toast(taskApiErr(e), 'error');
+                            }
+                          })();
                         },
                       });
                     }}
@@ -909,13 +1220,23 @@ export default function TasksPage() {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-                  <span className="text-[10px] bg-slate-50 border border-slate-100 text-slate-600 font-bold uppercase tracking-widest px-3 py-1 rounded-lg">
-                    Priority: {selectedTask.priority}
-                  </span>
                   <span className="text-xs text-slate-500 break-all">{taskRefLabel(selectedTask.id)}</span>
                 </div>
 
-                {currentUser?.role === 'Team Leader' && selectedTask.status === 'In Progress' && (
+                {selectedTaskSubmitNote ? (
+                  <div className="rounded-xl border border-indigo-100/60 bg-gradient-to-br from-slate-50/90 to-indigo-50/20 px-4 py-3">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-indigo-600/80">
+                      Submission note
+                    </p>
+                    <p className="mt-1.5 text-sm leading-relaxed text-slate-800 whitespace-pre-wrap break-words">
+                      {selectedTaskSubmitNote}
+                    </p>
+                  </div>
+                ) : null}
+
+                {currentUser?.role === 'Team Leader' &&
+                  selectedTask.status === 'In Progress' &&
+                  selectedTask.assignedTo !== currentUser.id && (
                   <div className="rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-50/90 to-indigo-50/40 px-4 py-4 sm:px-5">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <div className="flex items-start gap-3">
@@ -924,17 +1245,11 @@ export default function TasksPage() {
                         </span>
                         <TaskWorkElapsed
                           startedAtIso={getCurrentInProgressStartedAtIso(selectedTask)}
-                          label={
-                            selectedTask.assignedTo !== currentUser.id
-                              ? 'Team member — time on task'
-                              : 'Your time on task (assignee)'
-                          }
+                          label="Team member — time on task"
                         />
                       </div>
                       <p className="max-w-sm text-xs leading-relaxed text-slate-600">
-                        {selectedTask.assignedTo !== currentUser.id
-                          ? 'Live timer from when they pressed Start Work. Employees do not see this card — only Team Leaders do.'
-                          : 'Live timer from when you pressed Start Work.'}
+                        Live timer from when they pressed Start Work. Employees do not see this card — only Team Leaders do.
                       </p>
                     </div>
                   </div>
@@ -968,12 +1283,18 @@ export default function TasksPage() {
                       disabled={!forwardTlId}
                       onClick={() => {
                         if (!forwardTlId) return;
-                        forwardTaskToTeamLeader(selectedTask.id, forwardTlId);
-                        setForwardTlId('');
-                        toast(
-                          'Forwarded to Team Lead. They can start work from Project Manager.',
-                          'success'
-                        );
+                        void (async () => {
+                          try {
+                            await forwardTaskToTeamLeader(selectedTask.id, forwardTlId);
+                            setForwardTlId('');
+                            toast(
+                              'Forwarded to Team Lead. They can start work from Project Manager.',
+                              'success'
+                            );
+                          } catch (e) {
+                            toast(taskApiErr(e), 'error');
+                          }
+                        })();
                       }}
                       className="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-bold text-white shadow-md transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
                     >
@@ -1011,8 +1332,14 @@ export default function TasksPage() {
                       selectedTask.status === 'Pending' && (
                         <button
                           onClick={() => {
-                            startTaskWork(selectedTask.id);
-                            toast('Task started. Status updated to In Progress.', 'success');
+                            void (async () => {
+                              try {
+                                await startTaskWork(selectedTask.id);
+                                toast('Task started. Status updated to In Progress.', 'success');
+                              } catch (e) {
+                                toast(taskApiErr(e), 'error');
+                              }
+                            })();
                           }}
                           className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all active:scale-95 flex items-center gap-2"
                         >
@@ -1029,14 +1356,20 @@ export default function TasksPage() {
                           onClick={() => {
                             const note = submitNote.trim();
                             if (!note) return;
-                            submitTask(selectedTask.id, note);
-                            setSubmitNote('');
-                            toast(
-                              selectedTask.status === 'Review'
-                                ? 'Resubmitted. Waiting for approval.'
-                                : 'Task submitted. Waiting for approval.',
-                              'success'
-                            );
+                            void (async () => {
+                              try {
+                                await submitTask(selectedTask.id, note);
+                                setSubmitNote('');
+                                toast(
+                                  selectedTask.status === 'Review'
+                                    ? 'Resubmitted. Waiting for approval.'
+                                    : 'Task submitted. Waiting for approval.',
+                                  'success'
+                                );
+                              } catch (e) {
+                                toast(taskApiErr(e), 'error');
+                              }
+                            })();
                           }}
                           className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all active:scale-95 flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
                         >
@@ -1048,8 +1381,14 @@ export default function TasksPage() {
                     {reviewerCanMoveToReview(selectedTask) && (
                       <button
                         onClick={() => {
-                          moveTaskToReview(selectedTask.id);
-                          toast('Task moved to Review.', 'success');
+                          void (async () => {
+                            try {
+                              await moveTaskToReview(selectedTask.id);
+                              toast('Task moved to Review.', 'success');
+                            } catch (e) {
+                              toast(taskApiErr(e), 'error');
+                            }
+                          })();
                         }}
                         className="bg-violet-600 hover:bg-violet-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all active:scale-95 flex items-center gap-2"
                       >
@@ -1062,9 +1401,15 @@ export default function TasksPage() {
                       <button
                         type="button"
                         onClick={() => {
-                          approveTask(selectedTask.id);
-                          toast('Approved. Task marked as Approved.', 'success');
-                          setSelectedTaskId(null);
+                          void (async () => {
+                            try {
+                              await approveTask(selectedTask.id);
+                              toast('Approved. Task marked as Approved.', 'success');
+                              setSelectedTaskId(null);
+                            } catch (e) {
+                              toast(taskApiErr(e), 'error');
+                            }
+                          })();
                         }}
                         className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all active:scale-95 flex items-center gap-2"
                       >
@@ -1076,61 +1421,6 @@ export default function TasksPage() {
                 </div>
               </div>
               )}
-              <div className="space-y-3">
-                <div>
-                  <h4 className="text-sm font-bold text-slate-800">Task history (last 7 days)</h4>
-                  {hasHistoryOlderThan7Days && (
-                    <p className="mt-1 text-xs text-slate-500">Older events are hidden here; the task still keeps the full record.</p>
-                  )}
-                </div>
-                {historyForSelected.length === 0 ? (
-                  <p className="text-sm text-slate-500">
-                    {(selectedTask?.history?.length ?? 0) > 0
-                      ? 'No activity in the last 7 days.'
-                      : 'No history available.'}
-                  </p>
-                ) : (
-                  <div className="space-y-3">
-                    {historyForSelected.map((entry: TaskHistoryEntry) => {
-                      const label =
-                        entry.action === 'Reject'
-                          ? 'Rejected'
-                          : entry.action === 'Forward to Team Leader'
-                            ? 'Pending'
-                            : entry.toStatus;
-                      const badgeTone = statusBadge(label);
-                      const actorName = users.find(u => u.id === entry.actorId)?.name || 'Unknown';
-                      return (
-                        <div key={entry.id} className="flex items-start justify-between gap-4 p-4 rounded-[1.25rem] border border-slate-100 bg-white">
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-2">
-                              <span className={`text-[10px] font-bold px-3 py-1 rounded-full border uppercase tracking-wider ${badgeTone}`}>
-                                {label}
-                              </span>
-                              <span className="text-xs font-bold text-slate-700">{entry.action}</span>
-                            </div>
-                            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">
-                              {actorName} • {format(new Date(entry.at), 'MMM d, HH:mm')}
-                            </p>
-                            {entry.feedback && (
-                              <p className="text-sm text-slate-700 whitespace-pre-wrap mt-2">
-                                {entry.action === 'Submit' ? 'Submission note' : 'Feedback'}: {entry.feedback}
-                              </p>
-                            )}
-                          </div>
-                          <div className="text-right">
-                            {entry.fromStatus && (
-                              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
-                                {entry.fromStatus} → {entry.toStatus}
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
               </div>
             </div>
           </div>

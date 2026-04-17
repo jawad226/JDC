@@ -11,6 +11,9 @@ export interface UserProfileDto {
   cnic: string | null;
   address: string | null;
   profile_image: string | null;
+  team_id?: number | null;
+  team_name?: string | null;
+  work_site?: string | null;
 }
 
 export type UpdateProfileResponse = {

@@ -8,6 +8,10 @@ export interface AuthLoginUserDto {
   phone?: string | null;
   gdc_id?: string | null;
   avatar?: string | null;
+  /** From `teams.name` when user has `team_id` */
+  team_name?: string | null;
+  /** From `teams.department` (site) when user has a team */
+  work_site?: string | null;
 }
 
 export interface AuthLoginResponse {

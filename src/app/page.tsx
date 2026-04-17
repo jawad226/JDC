@@ -465,11 +465,6 @@ function TaskList({ tasks }: { tasks: Task[] }) {
             >
               <div className="flex justify-between items-start mb-4">
                 <h3 className="font-bold text-slate-800 text-base leading-tight group-hover:text-blue-600 transition-colors">{task.title}</h3>
-                <span className={`text-[10px] font-bold px-2 py-1 rounded-lg uppercase tracking-wider ${
-                  task.priority === 'High' ? 'bg-rose-50 text-rose-600' :
-                  task.priority === 'Medium' ? 'bg-amber-50 text-amber-600' :
-                  'bg-emerald-50 text-emerald-600'
-                }`}>{task.priority}</span>
               </div>
               <div className="flex items-center justify-between mt-auto">
                 <div className="flex items-center text-[10px] text-slate-400 font-bold uppercase tracking-widest">
@@ -1052,8 +1047,8 @@ function TeamLeaderDashboard() {
   const now = new Date();
 
   const myTeam = currentUser?.team;
-  const teamMembers = users.filter(u => u.team === myTeam && u.role !== 'Pending User');
-  const teamTasks = tasks.filter(t => teamMembers.some(m => m.id === t.assignedTo));
+  const teamEmployees = users.filter(u => u.team === myTeam && u.role === 'Employee');
+  const teamTasks = tasks.filter(t => teamEmployees.some(m => m.id === t.assignedTo));
   const completedTasks = teamTasks.filter(t => t.status === 'Approved').length;
   const inProgressTasks = teamTasks.filter(t => t.status === 'In Progress').length;
   const overdueTasks = teamTasks.filter(t => t.status !== 'Approved' && new Date(t.deadline) < now).length;
@@ -1063,7 +1058,7 @@ function TeamLeaderDashboard() {
       <TimerWidget />
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
-        <StatCard icon={Users} label="Team Size" value={teamMembers.length} color="text-blue-500" bg="bg-blue-50" />
+        <StatCard icon={Users} label="Employees" value={teamEmployees.length} color="text-blue-500" bg="bg-blue-50" />
         <StatCard icon={BarChart3} label="In Progress" value={inProgressTasks} color="text-indigo-500" bg="bg-indigo-50" />
         <StatCard icon={CheckCircle2} label="Completed" value={completedTasks} color="text-emerald-500" bg="bg-emerald-50" />
         <StatCard icon={AlertCircle} label="Overdue" value={overdueTasks} color="text-rose-500" bg="bg-rose-50" />
@@ -1095,31 +1090,35 @@ function TeamLeaderDashboard() {
               Member Performance
             </h2>
             <div className="space-y-5">
-              {teamMembers.map(member => {
-                const memberTasks = tasks.filter(t => t.assignedTo === member.id);
-                const done = memberTasks.filter(t => t.status === 'Approved').length;
-                const total = memberTasks.length;
-                const pct = total > 0 ? (done / total) * 100 : 0;
-                const isActive = timesheets.some(t => t.userId === member.id && !t.clockOut);
+              {teamEmployees.length === 0 ? (
+                <p className="text-sm text-slate-400">No employees on your team yet.</p>
+              ) : (
+                teamEmployees.map(member => {
+                  const memberTasks = tasks.filter(t => t.assignedTo === member.id);
+                  const done = memberTasks.filter(t => t.status === 'Approved').length;
+                  const total = memberTasks.length;
+                  const pct = total > 0 ? (done / total) * 100 : 0;
+                  const isActive = timesheets.some(t => t.userId === member.id && !t.clockOut);
 
-                return (
-                  <div key={member.id}>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <div className="relative">
-                          <div className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center text-xs font-bold text-slate-500">{member.name.charAt(0)}</div>
-                          <div className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white ${isActive ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                  return (
+                    <div key={member.id}>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <div className="relative">
+                            <div className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center text-xs font-bold text-slate-500">{member.name.charAt(0)}</div>
+                            <div className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white ${isActive ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                          </div>
+                          <span className="text-xs font-bold text-slate-700">{member.name}</span>
                         </div>
-                        <span className="text-xs font-bold text-slate-700">{member.name}</span>
+                        <span className="text-[10px] font-black text-slate-400">{done}/{total}</span>
                       </div>
-                      <span className="text-[10px] font-black text-slate-400">{done}/{total}</span>
+                      <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+                        <div className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full transition-all duration-500" style={{ width: `${Math.max(pct, 4)}%` }} />
+                      </div>
                     </div>
-                    <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full transition-all duration-500" style={{ width: `${Math.max(pct, 4)}%` }} />
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })
+              )}
             </div>
           </div>
 
@@ -1128,10 +1127,10 @@ function TeamLeaderDashboard() {
             <div className="relative z-10">
               <h3 className="text-lg font-bold mb-2">Team Status</h3>
               <p className="text-blue-100 text-xs leading-relaxed mb-4 font-medium">
-                {teamMembers.filter(m => timesheets.some(t => t.userId === m.id && !t.clockOut)).length} of {teamMembers.length} members currently working.
+                {teamEmployees.filter(m => timesheets.some(t => t.userId === m.id && !t.clockOut)).length} of {teamEmployees.length} employees currently working.
               </p>
               <div className="flex gap-2">
-                {teamMembers.map(m => {
+                {teamEmployees.map(m => {
                   const isActive = timesheets.some(t => t.userId === m.id && !t.clockOut);
                   return (
                     <div key={m.id} title={m.name} className={`w-8 h-8 rounded-xl flex items-center justify-center text-xs font-bold border-2 ${isActive ? 'bg-white/20 border-white/40 text-white' : 'bg-white/5 border-white/10 text-white/30'}`}>

@@ -18,6 +18,34 @@ import {
 import { emitChatSocketEvent } from '@/lib/chat-socket';
 import { MAX_UPLOAD_FILE_BYTES } from '@/lib/file-upload-limits';
 import { clockInBlockedBeforeOfficeStart, isClockInLate } from '@/lib/attendanceRules';
+import {
+  addTaskCommentApi,
+  approveTaskApi,
+  createTaskMultipart,
+  deleteTaskApi,
+  fetchTasksFromApi,
+  forwardTaskToTeamLeaderApi,
+  moveTaskToReviewApi,
+  startTaskWorkApi,
+  submitTaskApi,
+  updatePendingTaskMultipart,
+} from '@/services/tasks.service';
+
+async function taskAttachmentToFile(att: TaskAttachment): Promise<File> {
+  const res = await fetch(att.dataUrl);
+  const blob = await res.blob();
+  return new File([blob], att.fileName || 'attachment', {
+    type: blob.type || 'application/octet-stream',
+  });
+}
+
+function isoDeadlineToYmd(iso: string): string {
+  const d = new Date(iso);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 
 function mergeTeamGroupChat(threads: ChatThread[], teamName: string, users: User[]): ChatThread[] {
   const trimmed = teamName.trim();
@@ -130,8 +158,6 @@ export interface BreakEntry {
   endTime?: string;
 }
 
-export type TaskPriority = 'Low' | 'Medium' | 'High';
-
 export type TaskWorkflowStatus =
   | 'Pending'
   | 'In Progress'
@@ -178,8 +204,9 @@ export interface Task {
   description: string;
   assignedTo: string;
   assignedBy: string;
+  /** Set when tasks are loaded from Task API (`creator_role`); used to hide TL-created tasks from Admin/HR lists. */
+  creatorRole?: string;
   status: TaskWorkflowStatus;
-  priority: TaskPriority;
   deadline: string;
   comments: TaskComment[];
   history?: TaskHistoryEntry[];
@@ -264,8 +291,20 @@ export interface UserAvailability {
 
 /** True when the task was created by a Team Leader (scoped to that TL; hidden from Admin/HR lists and their review). */
 export function isTeamLeaderCreatedTask(task: Task, users: User[]): boolean {
+  if (task.creatorRole != null) {
+    return String(task.creatorRole).toLowerCase().replace(/\s+/g, '_') === 'team_leader';
+  }
   const creator = users.find((u) => u.id === task.assignedBy);
   return creator?.role === 'Team Leader';
+}
+
+/** Admin-created tasks assigned to HR: HR may only forward to Team Lead (no edit/delete). */
+export function isAdminCreatedTask(task: Task, users: User[]): boolean {
+  if (task.creatorRole != null) {
+    return String(task.creatorRole).toLowerCase().replace(/\s+/g, '_') === 'admin';
+  }
+  const creator = users.find((u) => u.id === task.assignedBy);
+  return creator?.role === 'Admin';
 }
 
 /** Admin + HR: Pending = HR hold or TL not started; Working = TL started (In Progress). Others see raw `task.status`. */
@@ -337,23 +376,24 @@ interface AppState {
   }) => void;
   // Admin actions
   addUser: (user: User) => void;
-  // Tasks
+  // Tasks (Task microservice — see `tasks.service.ts`)
+  refreshTasksFromApi: () => Promise<void>;
   createTask: (input: {
     title: string;
     description?: string;
     assignedTo: string;
     deadline: string;
     attachment: TaskAttachment;
-  }) => void;
+  }) => Promise<void>;
   /** HR only: assign project from Admin to a Team Leader (senior). */
-  forwardTaskToTeamLeader: (taskId: string, teamLeaderId: string) => void;
-  startTaskWork: (taskId: string) => void;
-  submitTask: (taskId: string, submissionNote: string) => void;
+  forwardTaskToTeamLeader: (taskId: string, teamLeaderId: string) => Promise<void>;
+  startTaskWork: (taskId: string) => Promise<void>;
+  submitTask: (taskId: string, submissionNote: string) => Promise<void>;
   /** HR/TL: move a submitted task into the Review step before final approval. */
-  moveTaskToReview: (taskId: string) => void;
-  approveTask: (taskId: string) => void;
+  moveTaskToReview: (taskId: string) => Promise<void>;
+  approveTask: (taskId: string) => Promise<void>;
   /** Admin / HR / Team Leader: remove a task only while it is still Pending. */
-  deletePendingTask: (taskId: string) => void;
+  deletePendingTask: (taskId: string) => Promise<void>;
   /** Admin / HR / Team Leader: edit fields only while task is still Pending. */
   updatePendingTask: (
     taskId: string,
@@ -361,11 +401,11 @@ interface AppState {
       title: string;
       description: string;
       assignedTo: string;
-      priority: TaskPriority;
       deadline: string;
+      file?: File | null;
     }
-  ) => void;
-  addTaskComment: (taskId: string, comment: string) => void;
+  ) => Promise<void>;
+  addTaskComment: (taskId: string, comment: string) => Promise<void>;
   // Leave
   applyLeave: (leave: Omit<LeaveRequest, 'id' | 'status' | 'createdAt'>) => void;
   updateLeavetatus: (leaveId: string, status: Leavetatus) => void;
@@ -947,61 +987,51 @@ export const useStore = create<AppState>()(
 
       addUser: (user) => set((state) => ({ users: [...state.users, user] })),
 
-      createTask: (input) => {
-        const { currentUser, users } = get();
+      refreshTasksFromApi: async () => {
+        const { currentUser } = get();
         if (!currentUser) return;
+        try {
+          const tasks = await fetchTasksFromApi();
+          set({ tasks });
+        } catch {
+          /* offline / task service down */
+        }
+      },
+
+      createTask: async (input) => {
+        const { currentUser, users } = get();
+        if (!currentUser) throw new Error('Not signed in');
         const { title, description, assignedTo, deadline, attachment } = input;
 
         const maxBytes = MAX_UPLOAD_FILE_BYTES;
-        if (!attachment?.dataUrl || attachment.fileSize > maxBytes || attachment.fileSize <= 0) return;
-
-        const assignedUser = users.find(u => u.id === assignedTo);
-        if (!assignedUser || assignedUser.role === 'Pending User') return;
-
-        // Admin → HR only. Team Leader → own team’s Employees only.
-        if (currentUser.role === 'Admin') {
-          if (assignedUser.role !== 'HR') return;
-        } else if (currentUser.role === 'Team Leader') {
-          if (assignedUser.role !== 'Employee') return;
-          if (!assignedUser.team || assignedUser.team !== currentUser.team) return;
-        } else {
-          return;
+        if (!attachment?.dataUrl || attachment.fileSize > maxBytes || attachment.fileSize <= 0) {
+          throw new Error('Invalid attachment');
         }
 
-        const nowIso = new Date().toISOString();
-        const desc = (description ?? '').trim();
-        const newTask: Task = {
-          id: Math.random().toString(36).substring(7),
-          title: title.trim(),
-          description: desc,
-          assignedTo,
-          assignedBy: currentUser.id,
-          status: 'Pending',
-          priority: 'Medium',
-          deadline,
-          attachment: {
-            fileName: attachment.fileName,
-            fileSize: attachment.fileSize,
-            dataUrl: attachment.dataUrl,
-          },
-          comments: [],
-          history: [
-            {
-              id: Math.random().toString(36).substring(7),
-              at: nowIso,
-              actorId: currentUser.id,
-              actorRole: currentUser.role,
-              fromStatus: null,
-              toStatus: 'Pending',
-              action: 'Created',
-            },
-          ],
-        };
+        const assignedUser = users.find(u => u.id === assignedTo);
+        if (!assignedUser || assignedUser.role === 'Pending User') throw new Error('Invalid assignee');
 
-        set((state) => ({ tasks: [...state.tasks, newTask] }));
+        if (currentUser.role === 'Admin') {
+          if (assignedUser.role !== 'HR') throw new Error('Admin can only assign to HR');
+        } else if (currentUser.role === 'Team Leader') {
+          if (assignedUser.role !== 'Employee') throw new Error('Assign to an employee');
+          if (!assignedUser.team || assignedUser.team !== currentUser.team) throw new Error('Not your team');
+        } else {
+          throw new Error('Cannot create task');
+        }
+
+        const file = await taskAttachmentToFile(attachment);
+        await createTaskMultipart({
+          title: title.trim(),
+          description: (description ?? '').trim(),
+          assignedTo,
+          deadlineYmd: isoDeadlineToYmd(deadline),
+          file,
+        });
+        await get().refreshTasksFromApi();
       },
 
-      forwardTaskToTeamLeader: (taskId, teamLeaderId) => {
+      forwardTaskToTeamLeader: async (taskId, teamLeaderId) => {
         const { currentUser, tasks, users } = get();
         if (!currentUser || currentUser.role !== 'HR') return;
 
@@ -1015,27 +1045,11 @@ export const useStore = create<AppState>()(
         const tl = users.find(u => u.id === teamLeaderId);
         if (!tl || tl.role !== 'Team Leader') return;
 
-        const nowIso = new Date().toISOString();
-        const entry: TaskHistoryEntry = {
-          id: Math.random().toString(36).substring(7),
-          at: nowIso,
-          actorId: currentUser.id,
-          actorRole: 'HR',
-          fromStatus: 'Pending',
-          toStatus: 'Pending',
-          action: 'Forward to Team Leader',
-        };
-
-        set((state) => ({
-          tasks: state.tasks.map(t =>
-            t.id === taskId
-              ? { ...t, assignedTo: teamLeaderId, history: [...(t.history || []), entry] }
-              : t
-          ),
-        }));
+        await forwardTaskToTeamLeaderApi(taskId, teamLeaderId);
+        await get().refreshTasksFromApi();
       },
 
-      deletePendingTask: (taskId) => {
+      deletePendingTask: async (taskId) => {
         const { currentUser, tasks, users } = get();
         if (!currentUser) return;
 
@@ -1048,6 +1062,7 @@ export const useStore = create<AppState>()(
           if (isTeamLeaderCreatedTask(task, users)) return;
         } else if (currentUser.role === 'HR') {
           if (!assignedUser || assignedUser.role !== 'HR' || task.assignedTo !== currentUser.id) return;
+          if (isAdminCreatedTask(task, users)) return;
         } else if (currentUser.role === 'Team Leader') {
           if (task.assignedBy !== currentUser.id) return;
           if (!assignedUser || assignedUser.role !== 'Employee' || assignedUser.team !== currentUser.team) return;
@@ -1055,17 +1070,18 @@ export const useStore = create<AppState>()(
           return;
         }
 
-        set((state) => ({ tasks: state.tasks.filter(t => t.id !== taskId) }));
+        await deleteTaskApi(taskId);
+        await get().refreshTasksFromApi();
       },
 
-      updatePendingTask: (taskId, input) => {
+      updatePendingTask: async (taskId, input) => {
         const { currentUser, tasks, users } = get();
         if (!currentUser) return;
 
         const task = tasks.find(t => t.id === taskId);
         if (!task || task.status !== 'Pending') return;
 
-        const { title, description, assignedTo, priority, deadline } = input;
+        const { title, description, assignedTo, deadline, file } = input;
         const assignedUser = users.find(u => u.id === assignedTo);
         if (!assignedUser || assignedUser.role === 'Pending User') return;
 
@@ -1073,6 +1089,7 @@ export const useStore = create<AppState>()(
           const cur = users.find(u => u.id === task.assignedTo);
           if (!cur || cur.role !== 'HR' || task.assignedTo !== currentUser.id) return;
           if (assignedUser.role !== 'HR' || assignedTo !== currentUser.id) return;
+          if (isAdminCreatedTask(task, users)) return;
         } else if (currentUser.role === 'Admin') {
           if (isTeamLeaderCreatedTask(task, users)) return;
           if (assignedUser.role !== 'HR' && assignedUser.role !== 'Team Leader') return;
@@ -1087,35 +1104,17 @@ export const useStore = create<AppState>()(
         const descriptionTrim = description.trim();
         if (!titleTrim || !deadline) return;
 
-        const nowIso = new Date().toISOString();
-        const entry: TaskHistoryEntry = {
-          id: Math.random().toString(36).substring(7),
-          at: nowIso,
-          actorId: currentUser.id,
-          actorRole: currentUser.role,
-          fromStatus: 'Pending',
-          toStatus: 'Pending',
-          action: 'Updated',
-        };
-
-        set((state) => ({
-          tasks: state.tasks.map(t =>
-            t.id === taskId
-              ? {
-                  ...t,
-                  title: titleTrim,
-                  description: descriptionTrim,
-                  assignedTo,
-                  priority,
-                  deadline,
-                  history: [...(t.history || []), entry],
-                }
-              : t
-          ),
-        }));
+        await updatePendingTaskMultipart(taskId, {
+          title: titleTrim,
+          description: descriptionTrim,
+          assignedTo,
+          deadlineYmd: isoDeadlineToYmd(deadline),
+          file: file ?? null,
+        });
+        await get().refreshTasksFromApi();
       },
 
-      startTaskWork: (taskId) => {
+      startTaskWork: async (taskId) => {
         const { currentUser, tasks } = get();
         if (!currentUser) return;
         if (currentUser.role !== 'Employee' && currentUser.role !== 'Team Leader') return;
@@ -1125,25 +1124,11 @@ export const useStore = create<AppState>()(
         if (task.assignedTo !== currentUser.id) return;
         if (task.status !== 'Pending') return;
 
-        set((state) => ({
-          tasks: state.tasks.map(t => {
-            if (t.id !== taskId) return t;
-            const nowIso = new Date().toISOString();
-            const entry: TaskHistoryEntry = {
-              id: Math.random().toString(36).substring(7),
-              at: nowIso,
-              actorId: currentUser.id,
-              actorRole: currentUser.role,
-              fromStatus: 'Pending',
-              toStatus: 'In Progress',
-              action: 'Start Work',
-            };
-            return { ...t, status: 'In Progress', history: [...(t.history || []), entry] };
-          }),
-        }));
+        await startTaskWorkApi(taskId);
+        await get().refreshTasksFromApi();
       },
 
-      submitTask: (taskId, submissionNote) => {
+      submitTask: async (taskId, submissionNote) => {
         const { currentUser, tasks } = get();
         if (!currentUser) return;
         if (currentUser.role !== 'Employee' && currentUser.role !== 'Team Leader') return;
@@ -1156,28 +1141,11 @@ export const useStore = create<AppState>()(
         if (task.assignedTo !== currentUser.id) return;
         if (task.status !== 'In Progress' && task.status !== 'Review') return;
 
-        const fromStatus = task.status;
-
-        set((state) => ({
-          tasks: state.tasks.map(t => {
-            if (t.id !== taskId) return t;
-            const nowIso = new Date().toISOString();
-            const entry: TaskHistoryEntry = {
-              id: Math.random().toString(36).substring(7),
-              at: nowIso,
-              actorId: currentUser.id,
-              actorRole: currentUser.role,
-              fromStatus,
-              toStatus: 'Submitted',
-              action: 'Submit',
-              feedback: note,
-            };
-            return { ...t, status: 'Submitted', history: [...(t.history || []), entry] };
-          }),
-        }));
+        await submitTaskApi(taskId, note);
+        await get().refreshTasksFromApi();
       },
 
-      moveTaskToReview: (taskId) => {
+      moveTaskToReview: async (taskId) => {
         const { currentUser, tasks, users } = get();
         const task = tasks.find(t => t.id === taskId);
         if (!task || task.status !== 'Submitted') return;
@@ -1199,25 +1167,11 @@ export const useStore = create<AppState>()(
           }
         }
 
-        set((state) => ({
-          tasks: state.tasks.map(t => {
-            if (t.id !== taskId) return t;
-            const nowIso = new Date().toISOString();
-            const entry: TaskHistoryEntry = {
-              id: Math.random().toString(36).substring(7),
-              at: nowIso,
-              actorId: currentUser.id,
-              actorRole: currentUser.role,
-              fromStatus: 'Submitted',
-              toStatus: 'Review',
-              action: 'Send to Review',
-            };
-            return { ...t, status: 'Review', history: [...(t.history || []), entry] };
-          }),
-        }));
+        await moveTaskToReviewApi(taskId);
+        await get().refreshTasksFromApi();
       },
 
-      approveTask: (taskId) => {
+      approveTask: async (taskId) => {
         const { currentUser, tasks, users } = get();
         const task = tasks.find(t => t.id === taskId);
         if (!task) return;
@@ -1240,46 +1194,17 @@ export const useStore = create<AppState>()(
           }
         }
 
-        const fromStatus = task.status;
-
-        set((state) => ({
-          tasks: state.tasks.map(t => {
-            if (t.id !== taskId) return t;
-            const nowIso = new Date().toISOString();
-            const entry: TaskHistoryEntry = {
-              id: Math.random().toString(36).substring(7),
-              at: nowIso,
-              actorId: currentUser.id,
-              actorRole: currentUser.role,
-              fromStatus,
-              toStatus: 'Approved',
-              action: 'Approve',
-            };
-            return { ...t, status: 'Approved', history: [...(t.history || []), entry] };
-          }),
-        }));
+        await approveTaskApi(taskId);
+        await get().refreshTasksFromApi();
       },
 
-      addTaskComment: (taskId, commentText) => {
+      addTaskComment: async (taskId, commentText) => {
         const { currentUser } = get();
         if (!currentUser) return;
-        
-        set((state) => ({
-          tasks: state.tasks.map(t => {
-            if (t.id === taskId) {
-              return {
-                ...t,
-                comments: [...t.comments, {
-                  id: Math.random().toString(36).substring(7),
-                  userId: currentUser.id,
-                  text: commentText,
-                  createdAt: new Date().toISOString()
-                }]
-              };
-            }
-            return t;
-          })
-        }));
+        const text = commentText.trim();
+        if (!text) return;
+        await addTaskCommentApi(taskId, text);
+        await get().refreshTasksFromApi();
       },
       
       applyLeave: (leaveData) => {
@@ -2171,7 +2096,11 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'gdc-storage',
-      version: 18,
+      version: 19,
+      partialize: (state) => {
+        const { tasks: _tasks, ...rest } = state;
+        return rest as typeof state;
+      },
       migrate: (persistedState: any) => {
         if (!persistedState) return persistedState;
 
@@ -2258,51 +2187,10 @@ export const useStore = create<AppState>()(
           teams: deriveTeamsRegistryFromUsers(mergedUsers),
         };
 
-        // Migration for new task workflow model.
-        if (!nextState.tasks) return nextState;
-
-        const users: User[] = nextState.users || [];
-        const roleById = new Map<string, Role>(users.map(u => [u.id, u.role]));
-
-        const validStatuses: TaskWorkflowStatus[] = [
-          'Pending',
-          'In Progress',
-          'Submitted',
-          'Review',
-          'Approved',
-        ];
-
-        const migratedTasks = (nextState.tasks as any[]).map((t) => {
-          let status: TaskWorkflowStatus =
-            t.status === 'Completed' ? 'Approved' : t.status;
-          if (!validStatuses.includes(status)) {
-            status = 'Pending';
-          }
-
-          const history: TaskHistoryEntry[] | undefined = Array.isArray(t.history)
-            ? t.history
-            : [
-                {
-                  id: Math.random().toString(36).substring(7),
-                  at: new Date().toISOString(),
-                  actorId: t.assignedBy || 'unknown',
-                  actorRole: roleById.get(t.assignedBy) || 'Admin',
-                  fromStatus: null,
-                  toStatus: status,
-                  action: 'Created',
-                },
-              ];
-
-          return {
-            ...t,
-            status,
-            history,
-          };
-        });
-
+        // Tasks are loaded from Task microservice only (not persisted).
         return {
           ...nextState,
-          tasks: migratedTasks,
+          tasks: [],
           teams: deriveTeamsRegistryFromUsers(nextState.users || []),
         };
       },
@@ -2312,6 +2200,7 @@ export const useStore = create<AppState>()(
             ? (persistedState as Partial<AppState>)
             : {};
         const merged = { ...currentState, ...partial };
+        merged.tasks = [];
         if (merged.attendanceDayOverrides == null || typeof merged.attendanceDayOverrides !== 'object') {
           merged.attendanceDayOverrides = {};
         }

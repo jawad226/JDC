@@ -4,6 +4,7 @@ import { ToastViewport } from '@/components/ToastViewport';
 import { ACCESS_TOKEN_COOKIE } from '@/lib/api/axios.config';
 import { mapProfileToStoreUser } from '@/lib/auth/map-api-user';
 import { useStore, type Role } from '@/lib/store';
+import { fetchMyTeamRoster, mapRosterMemberToStoreUser } from '@/services/team.service';
 import { getCurrentUserProfile } from '@/services/user.service';
 import { useRouter, usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
@@ -42,6 +43,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const user = mapProfileToStoreUser(profile, id, role);
           setCurrentUser(user);
           upsertUser(user);
+          void useStore.getState().refreshTasksFromApi();
           return;
         } catch {
           /* fall through to local roster */
@@ -51,6 +53,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const u = useStore.getState().users.find((x) => x.id === id);
       if (u && u.role === role) {
         setCurrentUser(u);
+        void useStore.getState().refreshTasksFromApi();
         return;
       }
 
@@ -74,6 +77,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       router.push('/auth/login');
     }
   }, [currentUser, pathname, router, mounted, setCurrentUser]);
+
+  useEffect(() => {
+    if (!mounted || !currentUser) return;
+    const t = setInterval(() => void useStore.getState().refreshTasksFromApi(), 30_000);
+    return () => clearInterval(t);
+  }, [mounted, currentUser?.id]);
+
+  /** Team Leader / Employee: load same-team users into `users` so dashboard filters like `u.team === myTeam` work. */
+  useEffect(() => {
+    if (!mounted || !currentUser) return;
+    if (currentUser.role !== 'Team Leader' && currentUser.role !== 'Employee') return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetchMyTeamRoster();
+        if (cancelled) return;
+        const { upsertUser, setCurrentUser } = useStore.getState();
+        for (const row of res.members) {
+          upsertUser(mapRosterMemberToStoreUser(row, res.team_name, res.work_site));
+        }
+        const latest = useStore.getState().currentUser;
+        if (latest && res.team_name) {
+          const ws = res.work_site?.trim();
+          setCurrentUser({
+            ...latest,
+            team: res.team_name.trim(),
+            workSite: ws && ws.length > 0 ? ws : latest.workSite,
+          });
+        }
+      } catch {
+        /* offline or not on a team yet */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [mounted, currentUser?.id, currentUser?.role]);
 
   // Prevent hydration mismatch by not rendering anything until mounted
   if (!mounted) {

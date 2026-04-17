@@ -28,7 +28,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="min-h-dvh bg-slate-50">
+    <html lang="en" className="min-h-dvh bg-slate-50" suppressHydrationWarning>
       <body className={`${inter.className} min-h-dvh bg-slate-50 antialiased`}>
         <AuthProvider>
           <div className="flex min-h-0 h-dvh w-full overflow-hidden bg-slate-50">

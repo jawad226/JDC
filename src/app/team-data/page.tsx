@@ -4,6 +4,7 @@ import { TeamAttendanceStats, TimesheetTable } from '@/features/timesheet/widget
 import { TaskTotalWorkDisplay } from '@/components/tasks/TaskTotalWorkDisplay';
 import { useStore, useShallow } from '@/lib/store';
 import type { Task, TaskWorkflowStatus } from '@/lib/store';
+import { getLatestSubmitNote } from '@/lib/task-submit-note';
 import { getLatestHistoryAtMs, taskHasActivityInLastDays } from '@/lib/taskWorkTimer';
 import { format } from 'date-fns';
 import {
@@ -85,13 +86,6 @@ function taskRefLabel(id: string): string {
   return `TASK-${id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase()}`;
 }
 
-function getLatestSubmitNote(task: Task): string | null {
-  const withNote = (task.history || []).filter((e) => e.action === 'Submit' && e.feedback?.trim());
-  if (!withNote.length) return null;
-  withNote.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
-  return withNote[0]!.feedback!.trim();
-}
-
 export default function TeamDataPage() {
   const router = useRouter();
   const { currentUser, users, timesheets, tasks } = useStore(
@@ -115,16 +109,17 @@ export default function TeamDataPage() {
   const isTl = currentUser?.role === 'Team Leader';
   const myTeam = currentUser?.team;
 
-  const teamMembers = useMemo(() => {
+  /** Same-team employees only (TL “team side” — no TL / HR / other roles in these lists). */
+  const teamEmployees = useMemo(() => {
     if (!isTl || !myTeam) return [];
-    return users.filter((u) => u.team === myTeam && u.role !== 'Pending User');
+    return users.filter((u) => u.team === myTeam && u.role === 'Employee');
   }, [isTl, myTeam, users]);
 
   const teamTasks = useMemo(() => {
-    if (!isTl || teamMembers.length === 0) return [];
-    const memberIds = new Set(teamMembers.map((m) => m.id));
-    return tasks.filter((t) => memberIds.has(t.assignedTo));
-  }, [isTl, teamMembers, tasks]);
+    if (!isTl || teamEmployees.length === 0) return [];
+    const employeeIds = new Set(teamEmployees.map((m) => m.id));
+    return tasks.filter((t) => employeeIds.has(t.assignedTo));
+  }, [isTl, teamEmployees, tasks]);
 
   const teamTasksTimerList = useMemo(() => {
     if (!isTl) return [];
@@ -140,6 +135,13 @@ export default function TeamDataPage() {
       return getLatestHistoryAtMs(b) - getLatestHistoryAtMs(a);
     });
   }, [isTl, teamTasks, timerAssigneeFilterId]);
+
+  useEffect(() => {
+    if (!timerAssigneeFilterId) return;
+    if (!teamEmployees.some((e) => e.id === timerAssigneeFilterId)) {
+      setTimerAssigneeFilterId('');
+    }
+  }, [timerAssigneeFilterId, teamEmployees]);
 
   const timerTotalCount = teamTasksTimerList.length;
   const timerTotalPages = Math.max(1, Math.ceil(timerTotalCount / timerPageSize));
@@ -179,10 +181,9 @@ export default function TeamDataPage() {
     (t) => t.status !== 'Approved' && new Date(t.deadline) < now
   ).length;
 
-  /** Team log: direct reports only — not the viewing TL’s own attendance (that stays under “My Weekly Hours”). */
+  /** Team log: employees on this team only (TL’s own hours stay under “My Weekly Hours”). */
   const teamTimesheets = timesheets
-    .filter((t) => teamMembers.some((m) => m.id === t.userId))
-    .filter((t) => t.userId !== currentUser.id)
+    .filter((t) => teamEmployees.some((m) => m.id === t.userId))
     .sort((a, b) => new Date(b.clockIn).getTime() - new Date(a.clockIn).getTime());
 
   const hasAnyTimerWindowActivity = teamTasks.some((t) =>
@@ -208,7 +209,7 @@ export default function TeamDataPage() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
-          <StatCard icon={Users} label="Team size" value={teamMembers.length} color="text-blue-500" bg="bg-blue-50" />
+          <StatCard icon={Users} label="Employees" value={teamEmployees.length} color="text-blue-500" bg="bg-blue-50" />
           <StatCard
             icon={BarChart3}
             label="In progress"
@@ -233,10 +234,10 @@ export default function TeamDataPage() {
               Member performance
             </h3>
             <div className="space-y-5">
-              {teamMembers.length === 0 ? (
-                <p className="text-sm text-slate-400">No team members yet.</p>
+              {teamEmployees.length === 0 ? (
+                <p className="text-sm text-slate-400">No employees on your team yet.</p>
               ) : (
-                teamMembers.map((member) => {
+                teamEmployees.map((member) => {
                   const memberTasks = tasks.filter((t) => t.assignedTo === member.id);
                   const done = memberTasks.filter((t) => t.status === 'Approved').length;
                   const total = memberTasks.length;
@@ -280,12 +281,12 @@ export default function TeamDataPage() {
             <div className="absolute top-0 right-0 -translate-y-1/2 translate-x-1/4 w-32 h-32 bg-white/10 rounded-full blur-2xl" />
             <div className="relative z-10">
               <h3 className="text-lg font-bold mb-2">Team status</h3>
-              <p className="text-blue-100 text-xs leading-relaxed mb-4 font-medium">
-                {teamMembers.filter((m) => timesheets.some((t) => t.userId === m.id && !t.clockOut)).length} of{' '}
-                {teamMembers.length} members clocked in now.
+                           <p className="text-blue-100 text-xs leading-relaxed mb-4 font-medium">
+                {teamEmployees.filter((m) => timesheets.some((t) => t.userId === m.id && !t.clockOut)).length} of{' '}
+                {teamEmployees.length} employees clocked in now.
               </p>
               <div className="flex flex-wrap gap-2">
-                {teamMembers.map((m) => {
+                {teamEmployees.map((m) => {
                   const isActive = timesheets.some((t) => t.userId === m.id && !t.clockOut);
                   return (
                     <div
@@ -364,8 +365,8 @@ export default function TeamDataPage() {
                   onChange={(e) => setTimerAssigneeFilterId(e.target.value)}
                   className="w-full cursor-pointer rounded-xl border border-slate-200/90 bg-gradient-to-b from-slate-50/90 to-white px-4 py-3.5 text-sm font-semibold text-slate-900 shadow-sm outline-none transition hover:border-indigo-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
                 >
-                  <option value="">All team members</option>
-                  {teamMembers
+                  <option value="">All employees</option>
+                  {teamEmployees
                     .slice()
                     .sort((a, b) => a.name.localeCompare(b.name))
                     .map((m) => (
@@ -417,13 +418,13 @@ export default function TeamDataPage() {
             ) : teamTasksTimerList.length === 0 ? (
               <div className="rounded-[1.75rem] border-2 border-dashed border-amber-200/80 bg-amber-50/50 px-6 py-12 text-center">
                 <p className="text-base font-semibold text-slate-800">No tasks for this filter</p>
-                <p className="mt-2 text-sm text-slate-600">Try another team member or show everyone.</p>
+                <p className="mt-2 text-sm text-slate-600">Try another employee or show everyone.</p>
                 <button
                   type="button"
                   onClick={() => setTimerAssigneeFilterId('')}
                   className="mt-5 rounded-xl bg-white px-5 py-2.5 text-sm font-bold text-indigo-700 shadow-md ring-1 ring-indigo-100 transition hover:bg-indigo-50"
                 >
-                  Show all team members
+                  Show all employees
                 </button>
               </div>
             ) : (
@@ -605,11 +606,11 @@ export default function TeamDataPage() {
           Attendance
         </h2>
 
-        <TeamAttendanceStats memberIds={teamMembers.map((m) => m.id)} timesheets={timesheets} />
+        <TeamAttendanceStats memberIds={teamEmployees.map((m) => m.id)} timesheets={timesheets} />
 
         <TimesheetTable
           timesheets={teamTimesheets}
-          users={teamMembers}
+          users={teamEmployees}
           title={myTeam ? `${myTeam} — team log` : 'Team attendance log'}
         />
       </section>
