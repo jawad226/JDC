@@ -5,7 +5,8 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { BRAND_LOGO_URL } from '@/lib/brand';
 import { usePathname, useRouter } from 'next/navigation';
-import Cookies from 'js-cookie';
+import { clearSessionCookies } from '@/views/auth/authSession';
+import { logoutFromApi } from '@/services/auth.service';
 import { useStore } from '@/lib/store';
 import { totalUnreadMessagesForViewer } from '@/lib/messaging';
 import { subscribeChatSocket } from '@/lib/chat-socket';
@@ -168,8 +169,8 @@ const navItems = [
                  <button
                    key={item.name}
                    onClick={() => {
-                     Cookies.remove('auth-role');
-                     Cookies.remove('auth-user-id');
+                     void logoutFromApi();
+                     clearSessionCookies();
                      setCurrentUser(null);
                      onClose();
                      router.push('/auth/login');

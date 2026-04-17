@@ -1,19 +1,21 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Eye, EyeOff, Loader2, Lock, LogIn, Mail } from 'lucide-react';
 import { useStore } from '@/lib/store';
 import AuthShell from '@/views/auth/AuthShell';
 import { AuthAlerts } from '@/views/auth/AuthAlerts';
 import { AUTH_INPUT_CLASS } from '@/views/auth/authConstants';
 import { commitSession } from '@/views/auth/authSession';
+import { loginWithApi } from '@/services/auth.service';
 
 export default function SignInView() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const setCurrentUser = useStore((s) => s.setCurrentUser);
-  const loginWithCredentials = useStore((s) => s.loginWithCredentials);
+  const upsertUser = useStore((s) => s.upsertUser);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -22,20 +24,31 @@ export default function SignInView() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
+  useEffect(() => {
+    const e = searchParams.get('email');
+    if (e) setEmail(e);
+    if (searchParams.get('registered') === '1') {
+      setSuccess(
+        'Account created. Check your email to verify if required, then sign in. If your account needs admin approval, wait before logging in.'
+      );
+    }
+  }, [searchParams]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccess(null);
     setLoading(true);
     try {
-      const res = loginWithCredentials(email, password);
+      const res = await loginWithApi(email, password);
       if (!res.ok) {
         setError(res.error);
         return;
       }
       setCurrentUser(res.user);
-      commitSession(res.user);
-      router.push('/');
+      upsertUser(res.user);
+      commitSession(res.user, res.token);
+      router.push(res.user.role === 'Pending User' ? '/pending' : '/');
       router.refresh();
     } finally {
       setLoading(false);
@@ -104,7 +117,7 @@ export default function SignInView() {
           </Link>
         </p>
         <p className="text-[11px] text-slate-400 text-center leading-relaxed">
-          Demo: e.g. <span className="font-mono">admin@example.com</span> / <span className="font-mono">admin123</span>
+          Use your registered account. New users must verify email, then wait for admin approval if required.
         </p>
       </form>
     </AuthShell>

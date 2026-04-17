@@ -293,29 +293,5 @@ export function canAddToOfficialGroup(user: User): boolean {
 
 /** Seeded official channel for first load / migration. */
 export function createDefaultChatThreads(): ChatThread[] {
-  const createdAt = new Date().toISOString();
-  return [
-    {
-      id: 'g-official-1',
-      kind: 'group',
-      scope: 'official',
-      name: 'Company announcements',
-      createdById: '2',
-      memberIds: ['1', '2', '3', '4', '5'],
-      messages: [
-        {
-          id: 'seed-m1',
-          chatId: 'g-official-1',
-          senderId: '2',
-          authorId: '2',
-          receiverId: null,
-          groupId: 'g-official-1',
-          readByUserIds: [],
-          body:
-            'Welcome to Company announcements. This channel is visible to everyone. Employees can read; only Admin, HR, and Team Leaders can post.',
-          createdAt,
-        },
-      ],
-    },
-  ];
+  return [];
 }

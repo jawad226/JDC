@@ -10,7 +10,6 @@ import {
   canAddToHrGroup,
   canAddToTlGroup,
   canAddToOfficialGroup,
-  createDefaultChatThreads,
   resolveMessageRecipients,
   migrateChatThreadsForReadReceipts,
   teamGroupChatId,
@@ -19,8 +18,6 @@ import {
 import { emitChatSocketEvent } from '@/lib/chat-socket';
 import { MAX_UPLOAD_FILE_BYTES } from '@/lib/file-upload-limits';
 import { clockInBlockedBeforeOfficeStart, isClockInLate } from '@/lib/attendanceRules';
-
-const initialChatThreads = createDefaultChatThreads();
 
 function mergeTeamGroupChat(threads: ChatThread[], teamName: string, users: User[]): ChatThread[] {
   const trimmed = teamName.trim();
@@ -99,6 +96,10 @@ export interface User {
   workSite?: string;
   /** Demo-only stored credential; do not render in admin lists. */
   password?: string;
+  /** Set when user row is loaded from admin API. */
+  isVerified?: boolean;
+  /** Set when user row is loaded from admin API. */
+  isApproved?: boolean;
 }
 
 export interface PasswordResetToken {
@@ -380,6 +381,8 @@ interface AppState {
   availability: UserAvailability[];
   updateAvailability: (userId: string, activeDays: DayAvailability[]) => void;
   // User Management
+  /** Replace `users` from API (e.g. admin directory). Recomputes `teams` from `user.team`. */
+  replaceDirectoryUsers: (users: User[]) => void;
   removeUser: (userId: string) => void;
   updateUser: (userId: string, updates: Partial<User>) => void;
   // Team Management
@@ -399,8 +402,6 @@ interface AppState {
     employeeIds: string[];
     siteName: string;
   }) => { ok: true } | { ok: false; error: string };
-  /** Admin/HR: set or clear who leads a team (site kept from current team if any). */
-  setTeamLeaderForTeam: (teamName: string, leaderUserId: string | null) => { ok: true } | { ok: false; error: string };
   /** Admin/HR: remove user from their current team (clears team + site). */
   removeUserFromTeamRoster: (userId: string) => { ok: true } | { ok: false; error: string };
   /** Admin/HR: move user to another team (site follows target team). */
@@ -409,26 +410,9 @@ interface AppState {
   addEmployeesToTeam: (teamName: string, employeeIds: string[]) => { ok: true } | { ok: false; error: string };
   // Approval
   approveUser: (userId: string, role: Role, team: string) => void;
-  // Registration & auth (demo: passwords stored in persisted state)
-  registerUser: (input: {
-    name: string;
-    email: string;
-    password: string;
-    phone: string;
-    department: Department;
-  }) => { ok: true; user: User } | { ok: false; error: string };
-  loginWithCredentials: (email: string, password: string) =>
-    | { ok: true; user: User }
-    | { ok: false; error: string };
-  requestPasswordReset: (email: string) =>
-    | { ok: true; demoOtp: string }
-    | { ok: false; error: string };
-  verifyPasswordResetOtp: (email: string, otp: string) =>
-    | { ok: true; token: string }
-    | { ok: false; error: string };
-  resetPasswordWithToken: (token: string, newPassword: string) =>
-    | { ok: true }
-    | { ok: false; error: string };
+  /** Upsert user row from API login / profile (for roster + hydration). */
+  upsertUser: (user: User) => void;
+  /** Legacy persisted slice; reset flow uses the API. */
   passwordResetTokens: PasswordResetToken[];
   /** In-app messaging (DMs + groups); rules in `@/lib/messaging`. */
   chatThreads: ChatThread[];
@@ -473,197 +457,12 @@ interface AppState {
   ) => { ok: true } | { ok: false; error?: string };
 }
 
-/** Baseline roster for demos; merged with persisted `users` on Admin directory. */
-export const DEMO_USER_SEED: User[] = [
-  {
-    id: '1',
-    name: 'Rameez Hasan',
-    role: 'Employee',
-    email: 'rameez@example.com',
-    team: undefined,
-    department: 'MERN Stack',
-    status: 'Available',
-    phone: '+92 300 1234567',
-    cnic: '35202-1234567-1',
-    address: 'House 12, Street 4, DHA Phase 5, Lahore',
-    employeeCode: 'GDC-EMP-001',
-    password: 'password123',
-  },
-  {
-    id: '2',
-    name: 'Admin User',
-    role: 'Admin',
-    email: 'admin@example.com',
-    team: undefined,
-    department: 'Web Development',
-    status: 'Available',
-    phone: '+92 300 0000001',
-    cnic: '35202-0000000-2',
-    address: 'Head Office, Karachi',
-    employeeCode: 'GDC-ADM-001',
-    password: 'admin123',
-  },
-  {
-    id: '3',
-    name: 'HR Manager',
-    role: 'Employee',
-    email: 'hr@example.com',
-    team: undefined,
-    department: 'Web Development',
-    status: 'Available',
-    phone: '+92 300 0000002',
-    cnic: '35202-0000000-3',
-    address: 'HR Block, Lahore',
-    employeeCode: 'GDC-HR-001',
-    password: 'hr123',
-  },
-  {
-    id: '4',
-    name: 'Sarah Khan',
-    role: 'Employee',
-    email: 'sarah@example.com',
-    team: undefined,
-    department: 'MERN Stack',
-    status: 'Available',
-    phone: '+92 300 0000003',
-    cnic: '35202-0000000-4',
-    address: 'Model Town, Lahore',
-    employeeCode: 'GDC-TL-001',
-    password: 'lead123',
-  },
-  {
-    id: '5',
-    name: 'Ali Ahmed',
-    role: 'Employee',
-    email: 'ali@example.com',
-    team: undefined,
-    department: 'Web Design',
-    status: 'Available',
-    phone: '+92 300 0000004',
-    cnic: '35202-0000000-5',
-    address: 'Gulberg III, Lahore',
-    employeeCode: 'GDC-EMP-002',
-    password: 'ali123',
-  },
-  {
-    id: '6',
-    name: 'New Applicant',
-    role: 'Pending User',
-    email: 'pending@example.com',
-    team: undefined,
-    status: undefined,
-    phone: '+92 300 0000005',
-    password: 'pending123',
-  },
-  {
-    id: '7',
-    name: 'Bilal Qureshi',
-    role: 'Employee',
-    email: 'bilal@example.com',
-    team: undefined,
-    department: 'Web Development',
-    status: 'Available',
-    phone: '+92 321 5550101',
-    cnic: '35202-1111222-3',
-    address: 'Johar Town, Lahore',
-    employeeCode: 'GDC-EMP-003',
-    password: 'bilal123',
-  },
-  {
-    id: '8',
-    name: 'Ayesha Noor',
-    role: 'Employee',
-    email: 'ayesha@example.com',
-    team: undefined,
-    department: 'Web Design',
-    status: 'Unavailable',
-    phone: '+92 333 5550102',
-    cnic: '42201-2222333-4',
-    address: 'Clifton Block 2, Karachi',
-    employeeCode: 'GDC-EMP-004',
-    password: 'ayesha123',
-  },
-  {
-    id: '9',
-    name: 'Omar Siddiqui',
-    role: 'Employee',
-    email: 'omar@example.com',
-    team: undefined,
-    department: 'SEO',
-    status: 'Available',
-    phone: '+92 345 5550103',
-    cnic: '42101-3333444-5',
-    address: 'F-7 Markaz, Islamabad',
-    employeeCode: 'GDC-TL-002',
-    password: 'omar123',
-  },
-  {
-    id: '10',
-    name: 'Fatima Malik',
-    role: 'Employee',
-    email: 'fatima@example.com',
-    team: undefined,
-    department: 'SEO',
-    status: 'Available',
-    phone: '+92 300 5550104',
-    cnic: '35202-4444555-6',
-    address: 'Satellite Town, Rawalpindi',
-    employeeCode: 'GDC-EMP-005',
-    password: 'fatima123',
-  },
-  {
-    id: '11',
-    name: 'Hassan Raza',
-    role: 'Pending User',
-    email: 'hassan.pending@example.com',
-    team: undefined,
-    status: undefined,
-    phone: '+92 302 5550105',
-    department: 'MERN Stack',
-    password: 'hassan123',
-  },
-  {
-    id: '12',
-    name: 'Nida Iqbal',
-    role: 'Employee',
-    email: 'nida@example.com',
-    team: undefined,
-    department: 'Web Development',
-    status: 'Leave',
-    phone: '+92 311 5550106',
-    cnic: '61101-5555666-7',
-    address: 'Gulshan-e-Iqbal, Karachi',
-    employeeCode: 'GDC-EMP-006',
-    password: 'nida123',
-  },
-  {
-    id: '13',
-    name: 'Zainab Farooq',
-    role: 'Employee',
-    email: 'zainab@example.com',
-    team: undefined,
-    department: 'Web Development',
-    status: 'Available',
-    phone: '+92 304 5550107',
-    cnic: '35202-6666777-8',
-    address: 'Bahria Town Phase 4, Lahore',
-    employeeCode: 'GDC-TL-003',
-    password: 'zainab123',
-  },
-];
-
-const mockUsers = DEMO_USER_SEED;
-
-/** Demo seed merged with persisted rows (`id` wins from persisted). Fixes truncated localStorage rosters. */
+/** Dedupe persisted users by id (no seed merge). */
 export function mergeUsersWithSeed(persisted: User[]): User[] {
   const map = new Map<string, User>();
-  for (const u of DEMO_USER_SEED) {
-    map.set(u.id, { ...u });
-  }
   for (const u of persisted) {
     if (!u?.id) continue;
-    const base = map.get(u.id);
-    map.set(u.id, base ? { ...base, ...u } : { ...u });
+    map.set(u.id, { ...u });
   }
   return [...map.values()];
 }
@@ -681,8 +480,8 @@ export function deriveTeamsRegistryFromUsers(users: User[]): string[] {
 export const useStore = create<AppState>()(
   persist(
     (set, get) => ({
-      currentUser: mockUsers[0],
-      users: mockUsers,
+      currentUser: null,
+      users: [],
       timesheets: [],
       attendanceDayOverrides: {} as Record<string, { hour: number; minute: number }>,
       adhocShiftsEnabled: true,
@@ -693,148 +492,24 @@ export const useStore = create<AppState>()(
       geoFencingOfficeLat: null as number | null,
       geoFencingOfficeLng: null as number | null,
       teams: [],
-      sites: ['Karachi HQ', 'Lahore Office', 'Islamabad', 'Remote'],
-      tasks: [
-        {
-          id: 't1',
-          title: 'Design Login Page',
-          description: 'Create the UI for the main login page — Admin assigned to HR; HR will forward to a Team Lead.',
-          assignedTo: '3',
-          assignedBy: '2',
-          status: 'Pending',
-          priority: 'High',
-          deadline: new Date(Date.now() + 86400000 * 2).toISOString(),
-          comments: [],
-          history: [
-            {
-              id: Math.random().toString(36).substring(7),
-              at: new Date().toISOString(),
-              actorId: '2',
-              actorRole: 'Admin',
-              fromStatus: null,
-              toStatus: 'Pending',
-              action: 'Created',
-            },
-          ],
-        },
-        {
-          id: 't2',
-          title: 'Review System Specs',
-          description: 'Technical review of the new digital care architecture',
-          assignedTo: '4',
-          assignedBy: '2',
-          status: 'Review',
-          priority: 'Medium',
-          deadline: new Date(Date.now() + 86400000 * 4).toISOString(),
-          comments: [],
-          history: [
-            {
-              id: Math.random().toString(36).substring(7),
-              at: new Date().toISOString(),
-              actorId: '2',
-              actorRole: 'Admin',
-              fromStatus: null,
-              toStatus: 'Pending',
-              action: 'Created',
-            },
-            {
-              id: Math.random().toString(36).substring(7),
-              at: new Date(Date.now() + 1000 * 60 * 2).toISOString(),
-              actorId: '3',
-              actorRole: 'HR',
-              fromStatus: 'Pending',
-              toStatus: 'Pending',
-              action: 'Forward to Team Leader',
-            },
-            {
-              id: Math.random().toString(36).substring(7),
-              at: new Date(Date.now() + 1000 * 60 * 5).toISOString(),
-              actorId: '4',
-              actorRole: 'Team Leader',
-              fromStatus: 'Pending',
-              toStatus: 'In Progress',
-              action: 'Start Work',
-            },
-            {
-              id: Math.random().toString(36).substring(7),
-              at: new Date(Date.now() + 1000 * 60 * 20).toISOString(),
-              actorId: '4',
-              actorRole: 'Team Leader',
-              fromStatus: 'In Progress',
-              toStatus: 'Submitted',
-              action: 'Submit',
-            },
-            {
-              id: Math.random().toString(36).substring(7),
-              at: new Date(Date.now() + 1000 * 60 * 25).toISOString(),
-              actorId: '3',
-              actorRole: 'HR',
-              fromStatus: 'Submitted',
-              toStatus: 'Review',
-              action: 'Send to Review',
-            },
-          ],
-        },
-        {
-          id: 't3',
-          title: 'Update Documentation',
-          description: 'Document the new RBAC implementation',
-          assignedTo: '1',
-          assignedBy: '2',
-          status: 'Approved',
-          priority: 'Low',
-          deadline: new Date(Date.now() - 86400000).toISOString(),
-          comments: [],
-          history: [
-            {
-              id: Math.random().toString(36).substring(7),
-              at: new Date().toISOString(),
-              actorId: '2',
-              actorRole: 'Admin',
-              fromStatus: null,
-              toStatus: 'Pending',
-              action: 'Created',
-            },
-            {
-              id: Math.random().toString(36).substring(7),
-              at: new Date(Date.now() + 1000 * 60 * 10).toISOString(),
-              actorId: '1',
-              actorRole: 'Employee',
-              fromStatus: 'Pending',
-              toStatus: 'In Progress',
-              action: 'Start Work',
-            },
-            {
-              id: Math.random().toString(36).substring(7),
-              at: new Date(Date.now() + 1000 * 60 * 30).toISOString(),
-              actorId: '1',
-              actorRole: 'Employee',
-              fromStatus: 'In Progress',
-              toStatus: 'Submitted',
-              action: 'Submit',
-            },
-            {
-              id: Math.random().toString(36).substring(7),
-              at: new Date(Date.now() + 1000 * 60 * 45).toISOString(),
-              actorId: '3',
-              actorRole: 'HR',
-              fromStatus: 'Submitted',
-              toStatus: 'Approved',
-              action: 'Approve',
-            },
-          ],
-        }
-      ],
+      sites: [],
+      tasks: [],
       Leave: [],
       manualTimeRequests: [],
       employeeDailyUpdates: [] as EmployeeDailyUpdate[],
       teamLeaderDailySummaries: [] as TeamLeaderDailySummary[],
       hrDailySummaries: [] as HRDailySummary[],
-      chatThreads: initialChatThreads,
+      chatThreads: [],
       passwordResetTokens: [] as PasswordResetToken[],
       availability: [],
       setCurrentUser: (user) => set({ currentUser: user }),
-      
+      upsertUser: (user) =>
+        set((s) => ({
+          users: s.users.some((u) => u.id === user.id)
+            ? s.users.map((u) => (u.id === user.id ? { ...u, ...user } : u))
+            : [...s.users, user],
+        })),
+
       clockIn: () => {
         const { currentUser, timesheets, adhocShiftsEnabled, attendanceDayOverrides } = get();
         if (!currentUser) return;
@@ -1747,6 +1422,20 @@ export const useStore = create<AppState>()(
         users: state.users.filter(u => u.id !== userId)
       })),
 
+      replaceDirectoryUsers: (users) =>
+        set((state) => {
+          let currentUser = state.currentUser;
+          if (currentUser) {
+            const refreshed = users.find((x) => x.id === currentUser!.id);
+            if (refreshed) currentUser = refreshed;
+          }
+          return {
+            users,
+            teams: deriveTeamsRegistryFromUsers(users),
+            currentUser,
+          };
+        }),
+
       updateUser: (userId, updates) =>
         set((state) => {
           const subject = state.users.find((u) => u.id === userId);
@@ -1824,8 +1513,8 @@ export const useStore = create<AppState>()(
         if (!trimmedSite) return { ok: false, error: 'Enter a department name.' };
 
         const uniqueEmployees = [...new Set(employeeIds)];
-        if (uniqueEmployees.length < 2) {
-          return { ok: false, error: 'Select at least two different employees.' };
+        if (uniqueEmployees.length < 1) {
+          return { ok: false, error: 'Select at least one employee.' };
         }
         if (uniqueEmployees.includes(leaderUserId)) {
           return { ok: false, error: 'Team leader cannot be selected as an employee.' };
@@ -1884,61 +1573,6 @@ export const useStore = create<AppState>()(
           const chatThreads = mergeTeamGroupChat(state.chatThreads, trimmedTeam, next);
 
           return { users: next, teams, currentUser, chatThreads };
-        });
-
-        return { ok: true };
-      },
-
-      setTeamLeaderForTeam: (teamName, leaderUserId) => {
-        const actor = get().currentUser;
-        if (!actor || (actor.role !== 'Admin' && actor.role !== 'HR')) {
-          return { ok: false, error: 'Only Admin or HR can change team leads.' };
-        }
-        const trimmed = teamName.trim();
-        if (!trimmed) return { ok: false, error: 'Team name required.' };
-
-        const { users } = get();
-        const siteForTeam = (list: User[]) => {
-          const onTeam = list.filter((u) => u.team === trimmed);
-          const tl = onTeam.find((u) => u.role === 'Team Leader');
-          if (tl?.workSite) return tl.workSite;
-          return onTeam.find((u) => u.workSite)?.workSite;
-        };
-
-        if (leaderUserId) {
-          const leader = users.find((u) => u.id === leaderUserId);
-          if (!leader || leader.role !== 'Team Leader') {
-            return { ok: false, error: 'Pick a user with the Team Leader role.' };
-          }
-        }
-
-        set((state) => {
-          let next = state.users.map((u) => {
-            if (u.role === 'Team Leader' && u.team === trimmed) {
-              return { ...u, team: undefined, workSite: undefined };
-            }
-            return u;
-          });
-
-          const site = siteForTeam(next) ?? '';
-
-          if (leaderUserId) {
-            next = next.map((u) =>
-              u.id === leaderUserId
-                ? { ...u, team: trimmed, role: 'Team Leader' as Role, workSite: site || u.workSite }
-                : u
-            );
-          }
-
-          const teams = state.teams.includes(trimmed) ? state.teams : [...state.teams, trimmed];
-
-          let currentUser = state.currentUser;
-          if (currentUser) {
-            const refreshed = next.find((x) => x.id === currentUser!.id);
-            if (refreshed) currentUser = refreshed;
-          }
-
-          return { users: next, teams, currentUser };
         });
 
         return { ok: true };
@@ -2534,148 +2168,15 @@ export const useStore = create<AppState>()(
         return { ok: true };
       },
 
-      registerUser: (input) => {
-        const { name, email, password, phone, department } = input;
-        const trimmedEmail = email.trim().toLowerCase();
-        if (!name.trim() || !trimmedEmail || !password || !phone.trim()) {
-          return { ok: false, error: 'Please fill in all required fields.' };
-        }
-        if (password.length < 6) {
-          return { ok: false, error: 'Password must be at least 6 characters.' };
-        }
-        const { users } = get();
-        if (users.some(u => u.email.toLowerCase() === trimmedEmail)) {
-          return { ok: false, error: 'An account with this email already exists.' };
-        }
-        const newUser: User = {
-          id: Math.random().toString(36).substring(7),
-          name: name.trim(),
-          email: trimmedEmail,
-          role: 'Employee',
-          team: undefined,
-          status: undefined,
-          phone: phone.trim(),
-          department,
-          password,
-        };
-        set((state) => ({ users: [...state.users, newUser] }));
-        return { ok: true, user: newUser };
-      },
-
-      loginWithCredentials: (email, password) => {
-        const trimmedEmail = email.trim().toLowerCase();
-        const { users } = get();
-        const user = users.find(u => u.email.toLowerCase() === trimmedEmail);
-        if (!user || !user.password) {
-          return { ok: false, error: 'Invalid email or password.' };
-        }
-        if (user.password !== password) {
-          return { ok: false, error: 'Invalid email or password.' };
-        }
-        return { ok: true, user };
-      },
-
-      requestPasswordReset: (email) => {
-        const trimmedEmail = email.trim().toLowerCase();
-        const { users, passwordResetTokens } = get();
-        const user = users.find(u => u.email.toLowerCase() === trimmedEmail);
-        if (!user) {
-          return { ok: false, error: 'No account found with this email.' };
-        }
-        const token = `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
-        const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-        const otp = String(Math.floor(100000 + Math.random() * 900000));
-        const entry: PasswordResetToken = {
-          id: Math.random().toString(36).substring(7),
-          email: trimmedEmail,
-          token,
-          expiresAt,
-          otp,
-          otpVerified: false,
-        };
-        const next = passwordResetTokens.filter(t => t.email !== trimmedEmail);
-        set({ passwordResetTokens: [...next, entry] });
-        return { ok: true, demoOtp: otp };
-      },
-
-      verifyPasswordResetOtp: (email, otp) => {
-        const trimmedEmail = email.trim().toLowerCase();
-        const code = otp.replace(/\D/g, '').slice(0, 6);
-        if (code.length !== 6) {
-          return { ok: false, error: 'Enter the full 6-digit code.' };
-        }
-        const { passwordResetTokens } = get();
-        const rec = passwordResetTokens.find(t => t.email === trimmedEmail);
-        if (!rec) {
-          return { ok: false, error: 'No reset request found. Go back and request a code again.' };
-        }
-        if (new Date(rec.expiresAt).getTime() < Date.now()) {
-          set({ passwordResetTokens: passwordResetTokens.filter(t => t.email !== trimmedEmail) });
-          return { ok: false, error: 'This code has expired. Request a new one.' };
-        }
-        if (!rec.otp) {
-          return { ok: true, token: rec.token };
-        }
-        if (rec.otp !== code) {
-          return { ok: false, error: 'Invalid code. Check and try again.' };
-        }
-        if (!rec.otpVerified) {
-          set({
-            passwordResetTokens: passwordResetTokens.map(t =>
-              t.email === trimmedEmail ? { ...t, otpVerified: true } : t
-            ),
-          });
-        }
-        return { ok: true, token: rec.token };
-      },
-
-      resetPasswordWithToken: (token, newPassword) => {
-        if (!token || newPassword.length < 6) {
-          return { ok: false, error: 'Password must be at least 6 characters.' };
-        }
-        const { passwordResetTokens, users } = get();
-        const rec = passwordResetTokens.find(t => t.token === token);
-        if (!rec) {
-          return { ok: false, error: 'Invalid or expired reset link.' };
-        }
-        if (new Date(rec.expiresAt).getTime() < Date.now()) {
-          set({ passwordResetTokens: passwordResetTokens.filter(t => t.token !== token) });
-          return { ok: false, error: 'This reset link has expired. Request a new one.' };
-        }
-        if (rec.otp && !rec.otpVerified) {
-          return { ok: false, error: 'Verify the code sent to your email before setting a new password.' };
-        }
-        const email = rec.email.toLowerCase();
-        set({
-          users: users.map(u =>
-            u.email.toLowerCase() === email ? { ...u, password: newPassword } : u
-          ),
-          passwordResetTokens: passwordResetTokens.filter(t => t.token !== token),
-        });
-        return { ok: true };
-      },
     }),
     {
       name: 'gdc-storage',
-      version: 16,
+      version: 18,
       migrate: (persistedState: any) => {
         if (!persistedState) return persistedState;
 
-        const demoPasswords: Record<string, string> = {
-          'rameez@example.com': 'password123',
-          'admin@example.com': 'admin123',
-          'hr@example.com': 'hr123',
-          'sarah@example.com': 'lead123',
-          'ali@example.com': 'ali123',
-          'pending@example.com': 'pending123',
-        };
-
-        // Ensure new slices exist.
-        const defaultSites = ['Karachi HQ', 'Lahore Office', 'Islamabad', 'Remote'];
-        const migratedThreads =
-          Array.isArray(persistedState.chatThreads) && persistedState.chatThreads.length > 0
-            ? persistedState.chatThreads
-            : createDefaultChatThreads();
+        const LEGACY_DEMO_SITES = ['Karachi HQ', 'Lahore Office', 'Islamabad', 'Remote'] as const;
+        const migratedThreads = Array.isArray(persistedState.chatThreads) ? persistedState.chatThreads : [];
         const legacyRead =
           persistedState.chatLastReadAt && typeof persistedState.chatLastReadAt === 'object'
             ? (persistedState.chatLastReadAt as Record<string, string>)
@@ -2687,23 +2188,7 @@ export const useStore = create<AppState>()(
         const normalizedUsers: User[] = Array.isArray(persistedState.users)
           ? (persistedState.users as any[]).map((u) => {
               const fixedStatus = u?.status === 'Holiday' ? { ...u, status: 'Unavailable' as const } : u;
-              const em = String(fixedStatus?.email || '').toLowerCase();
-              const mock = mockUsers.find((m) => m.email.toLowerCase() === em);
-              const merged =
-                mock && mock.email.toLowerCase() === em
-                  ? {
-                      ...fixedStatus,
-                      department: fixedStatus?.department ?? mock.department,
-                      phone: fixedStatus?.phone ?? mock.phone,
-                      cnic: fixedStatus?.cnic ?? mock.cnic,
-                      address: fixedStatus?.address ?? mock.address,
-                      employeeCode: fixedStatus?.employeeCode ?? mock.employeeCode,
-                    }
-                  : fixedStatus;
-              if (!merged?.password && em && demoPasswords[em]) {
-                return { ...merged, password: demoPasswords[em] };
-              }
-              return merged;
+              return fixedStatus;
             }) as User[]
           : [];
 
@@ -2738,10 +2223,16 @@ export const useStore = create<AppState>()(
             typeof persistedState.geoFencingOfficeLat === 'number' ? persistedState.geoFencingOfficeLat : null,
           geoFencingOfficeLng:
             typeof persistedState.geoFencingOfficeLng === 'number' ? persistedState.geoFencingOfficeLng : null,
-          sites:
-            Array.isArray(persistedState.sites) && persistedState.sites.length > 0
-              ? persistedState.sites
-              : defaultSites,
+          sites: (() => {
+            const raw = Array.isArray(persistedState.sites) ? [...persistedState.sites] : [];
+            if (
+              raw.length === LEGACY_DEMO_SITES.length &&
+              LEGACY_DEMO_SITES.every((s) => raw.includes(s))
+            ) {
+              return [];
+            }
+            return raw;
+          })(),
           manualTimeRequests: Array.isArray(persistedState.manualTimeRequests) ? persistedState.manualTimeRequests : [],
           passwordResetTokens: Array.isArray(persistedState.passwordResetTokens)
             ? (persistedState.passwordResetTokens as PasswordResetToken[]).map((t) => {
@@ -2770,7 +2261,7 @@ export const useStore = create<AppState>()(
         // Migration for new task workflow model.
         if (!nextState.tasks) return nextState;
 
-        const users: User[] = nextState.users || mockUsers;
+        const users: User[] = nextState.users || [];
         const roleById = new Map<string, Role>(users.map(u => [u.id, u.role]));
 
         const validStatuses: TaskWorkflowStatus[] = [

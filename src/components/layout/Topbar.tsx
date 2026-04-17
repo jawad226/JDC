@@ -13,21 +13,21 @@ function getInitials(text: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-/** Label in the header pill (e.g. HR → “HR Manager”). */
+/** Label beside avatar: account role (not display name). */
 function headerPillLabel(user: User): string {
   switch (user.role) {
-    case 'HR':
-      return 'HR Manager';
     case 'Admin':
-      return 'Admin User';
+      return 'Admin';
+    case 'HR':
+      return 'HR';
     case 'Team Leader':
       return 'Team Leader';
     case 'Employee':
-      return user.name;
+      return 'Employee';
     case 'Pending User':
-      return user.name || 'Pending';
+      return 'Pending';
     default:
-      return user.name;
+      return 'User';
   }
 }
 

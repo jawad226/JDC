@@ -3,7 +3,8 @@
 import { useStore } from '@/lib/store';
 import { Clock, ShieldCheck, Mail, LogOut } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import Cookies from 'js-cookie';
+import { clearSessionCookies } from '@/views/auth/authSession';
+import { logoutFromApi } from '@/services/auth.service';
 
 export default function PendingPage() {
   const currentUser = useStore((s) => s.currentUser);
@@ -11,8 +12,8 @@ export default function PendingPage() {
   const router = useRouter();
 
   const handleLogout = () => {
-    Cookies.remove('auth-role');
-    Cookies.remove('auth-user-id');
+    void logoutFromApi();
+    clearSessionCookies();
     setCurrentUser(null);
     router.push('/auth/login');
     router.refresh();

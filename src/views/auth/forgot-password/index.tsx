@@ -4,17 +4,15 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, KeyRound, Loader2, Mail, RefreshCw, ShieldCheck } from 'lucide-react';
-import { useStore } from '@/lib/store';
 import AuthShell from '@/views/auth/AuthShell';
 import { AuthAlerts } from '@/views/auth/AuthAlerts';
 import { AUTH_INPUT_CLASS } from '@/views/auth/authConstants';
+import { forgotPasswordApi, verifyResetOtpApi } from '@/services/auth.service';
 
 type Step = 'email' | 'otp';
 
 export default function ForgotPasswordView() {
   const router = useRouter();
-  const requestPasswordReset = useStore((s) => s.requestPasswordReset);
-  const verifyPasswordResetOtp = useStore((s) => s.verifyPasswordResetOtp);
 
   const [step, setStep] = useState<Step>('email');
   const [loading, setLoading] = useState(false);
@@ -23,7 +21,6 @@ export default function ForgotPasswordView() {
   const [email, setEmail] = useState('');
   const [submittedEmail, setSubmittedEmail] = useState('');
   const [otp, setOtp] = useState('');
-  const [demoOtp, setDemoOtp] = useState<string | null>(null);
 
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,19 +28,16 @@ export default function ForgotPasswordView() {
     setSuccess(null);
     setLoading(true);
     try {
-      const res = requestPasswordReset(email);
+      const res = await forgotPasswordApi(email);
       if (!res.ok) {
         setError(res.error);
         return;
       }
       const trimmed = email.trim().toLowerCase();
       setSubmittedEmail(trimmed);
-      setDemoOtp(res.demoOtp);
       setOtp('');
       setStep('otp');
-      setSuccess(
-        'If an account exists for this email, a verification code was generated. Enter the 6-digit code below.'
-      );
+      setSuccess(res.message || 'If an account exists, a code was sent to your email.');
     } finally {
       setLoading(false);
     }
@@ -55,12 +49,12 @@ export default function ForgotPasswordView() {
     setSuccess(null);
     setLoading(true);
     try {
-      const res = verifyPasswordResetOtp(submittedEmail, otp);
+      const res = await verifyResetOtpApi(otp);
       if (!res.ok) {
         setError(res.error);
         return;
       }
-      router.replace(`/auth/reset-password?token=${encodeURIComponent(res.token)}`);
+      router.replace('/auth/reset-password');
     } finally {
       setLoading(false);
     }
@@ -71,14 +65,13 @@ export default function ForgotPasswordView() {
     setSuccess(null);
     setLoading(true);
     try {
-      const res = requestPasswordReset(submittedEmail);
+      const res = await forgotPasswordApi(submittedEmail);
       if (!res.ok) {
         setError(res.error);
         return;
       }
-      setDemoOtp(res.demoOtp);
       setOtp('');
-      setSuccess('A new code was sent. Use the updated demo code below.');
+      setSuccess(res.message || 'Code resent. Check your email.');
     } finally {
       setLoading(false);
     }
@@ -89,7 +82,6 @@ export default function ForgotPasswordView() {
     setError(null);
     setSuccess(null);
     setOtp('');
-    setDemoOtp(null);
   };
 
   return (
@@ -145,13 +137,8 @@ export default function ForgotPasswordView() {
               <Mail className="h-4 w-4 shrink-0" aria-hidden />
               Code sent to <span className="break-all">{submittedEmail}</span>
             </p>
-            {demoOtp ? (
-              <p className="mt-2 rounded-lg bg-white/80 px-2 py-1.5 font-mono text-base font-bold tracking-[0.2em] text-indigo-900 ring-1 ring-indigo-100">
-                Demo code: {demoOtp}
-              </p>
-            ) : null}
             <p className="mt-2 text-xs leading-relaxed text-indigo-800/90">
-              In production this code would arrive by email. This demo shows it here so you can continue the flow.
+              Enter the 6-digit code from your email. This page must stay on the same browser so the reset can complete.
             </p>
           </div>
 

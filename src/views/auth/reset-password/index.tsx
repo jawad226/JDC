@@ -1,33 +1,24 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { ArrowLeft, Eye, EyeOff, KeyRound, Loader2, Lock } from 'lucide-react';
-import { useStore } from '@/lib/store';
 import AuthShell from '@/views/auth/AuthShell';
 import { AuthAlerts } from '@/views/auth/AuthAlerts';
 import { AUTH_INPUT_CLASS } from '@/views/auth/authConstants';
+import { resetPasswordApi } from '@/services/auth.service';
 
 export default function ResetPasswordView() {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const tokenFromUrl = searchParams.get('token') || '';
-
-  const resetPasswordWithToken = useStore((s) => s.resetPasswordWithToken);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [showPw, setShowPw] = useState(false);
   const [showPw2, setShowPw2] = useState(false);
-  const [token, setToken] = useState(tokenFromUrl);
   const [password, setPassword] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
-
-  useEffect(() => {
-    setToken(tokenFromUrl);
-  }, [tokenFromUrl]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -39,7 +30,7 @@ export default function ResetPasswordView() {
     }
     setLoading(true);
     try {
-      const res = resetPasswordWithToken(token, password);
+      const res = await resetPasswordApi(password, passwordConfirm);
       if (!res.ok) {
         setError(res.error);
         return;

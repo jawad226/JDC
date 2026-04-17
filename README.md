@@ -1,5 +1,17 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## API service layer (Express)
+
+- **Env:** [`.env.example`](./.env.example) → copy to `.env.local` and set `NEXT_PUBLIC_API_URL` (no trailing slash).
+- **Axios:** [`src/lib/api/axios.config.ts`](./src/lib/api/axios.config.ts) — `apiClient`, Bearer from **`accessToken`** cookie, headers `X-Client-Platform: web`, `X-Client-Version`.
+- **Paths:** [`src/lib/api/api-base-urls.ts`](./src/lib/api/api-base-urls.ts).
+- **HTTP:** [`src/lib/api/axios-request-handler.ts`](./src/lib/api/axios-request-handler.ts) — `apiGet` / `apiPost` / `apiPut` / `apiDelete`.
+- **Example:** [`src/services/user.service.ts`](./src/services/user.service.ts) — `getCurrentUserProfile()`.
+
+**Auth integration:** Sign-in and register call the Express API ([`src/services/auth.service.ts`](./src/services/auth.service.ts)). Login stores **`accessToken`** + `auth-role` / `auth-user-id` via [`authSession.ts`](./src/views/auth/authSession.ts). Forgot/reset password uses the backend OTP + `resetUserId` cookie (keep requests on the same browser, `withCredentials: true`).
+
+**Demo data:** The seeded user roster and sample tasks were removed from [`src/lib/store.ts`](./src/lib/store.ts). Clock-in, timesheets, tasks, messaging, and similar features still use **local persisted state** until you add matching backend APIs and sync them.
+
 ## Getting Started
 
 First, run the development server:

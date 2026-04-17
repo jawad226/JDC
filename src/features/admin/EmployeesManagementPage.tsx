@@ -3,6 +3,14 @@
 import { employeeDisplayId } from '@/lib/attendanceSite';
 import { useStore, useShallow, Role, User, mergeUsersWithSeed } from '@/lib/store';
 import {
+  approveUserApi,
+  frontendRoleToApiRole,
+  rejectUserApi,
+  updateUserRoleApi,
+} from '@/services/admin.service';
+import { buildUsersWithResolvedTeams } from '@/services/team.service';
+import { isAxiosError } from 'axios';
+import {
   ShieldCheck,
   Users,
   Mail,
@@ -13,10 +21,24 @@ import {
   Hash,
   Search,
   Sparkles,
+  Loader2,
+  RefreshCw,
 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
-const MANAGEABLE_ROLES: Role[] = ['Employee', 'Team Leader', 'HR', 'Pending User'];
+function apiErrorMessage(e: unknown): string {
+  if (
+    isAxiosError(e) &&
+    e.response?.data &&
+    typeof e.response.data === 'object' &&
+    e.response.data !== null &&
+    'message' in e.response.data
+  ) {
+    return String((e.response.data as { message: unknown }).message);
+  }
+  if (e instanceof Error) return e.message;
+  return 'Something went wrong';
+}
 
 type RoleFilter = 'All' | 'Employee' | 'Team Leader' | 'HR' | 'Pending User';
 
@@ -28,22 +50,71 @@ function roleBadgeClass(role: Role): string {
   return 'bg-slate-50 text-slate-600 border-slate-100';
 }
 
+/**
+ * Promote modal targets only (matches backend: e.g. no Team Leader → Employee via API).
+ * - Pending: Employee, Team Leader, or HR
+ * - Employee: Team Leader or HR only
+ * - Team Leader: HR only
+ * - HR: HR only
+ */
+function promotableRolesForUser(currentRole: Role): Role[] {
+  switch (currentRole) {
+    case 'Pending User':
+      return ['Employee', 'Team Leader', 'HR'];
+    case 'Employee':
+      return ['Team Leader', 'HR'];
+    case 'Team Leader':
+      return ['HR'];
+    case 'HR':
+      return ['HR'];
+    default:
+      return [];
+  }
+}
+
 export function EmployeesManagementPage() {
-  const { users, removeUser, updateUser } = useStore(
+  const { users, replaceDirectoryUsers, currentUser } = useStore(
     useShallow((s) => ({
       users: s.users,
-      removeUser: s.removeUser,
-      updateUser: s.updateUser,
+      replaceDirectoryUsers: s.replaceDirectoryUsers,
+      currentUser: s.currentUser,
     }))
   );
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [roleFilter, setRoleFilter] = useState<RoleFilter>('All');
   const [idSearch, setIdSearch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const loadUsers = useCallback(async () => {
+    setLoadError(null);
+    setActionError(null);
+    setLoading(true);
+    try {
+      const merged = await buildUsersWithResolvedTeams();
+      replaceDirectoryUsers(merged);
+    } catch (e) {
+      setLoadError(apiErrorMessage(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [replaceDirectoryUsers]);
+
+  useEffect(() => {
+    void loadUsers();
+  }, [loadUsers]);
 
   const directoryUsers = useMemo(() => mergeUsersWithSeed(users), [users]);
   const nonAdminUsers = useMemo(
     () => directoryUsers.filter((u) => u.role !== 'Admin'),
     [directoryUsers]
+  );
+
+  const promoteRoleOptions = useMemo(
+    () => (editingUser ? promotableRolesForUser(editingUser.role) : []),
+    [editingUser]
   );
 
   const filteredUsers = useMemo(() => {
@@ -61,14 +132,47 @@ export function EmployeesManagementPage() {
     return list;
   }, [nonAdminUsers, roleFilter, idSearch]);
 
-  const handleUpdateRole = (userId: string, newRole: Role) => {
-    updateUser(userId, { role: newRole });
-    setEditingUser(null);
+  const submitRoleChange = async (user: User, newRole: Role) => {
+    if (newRole === user.role) {
+      setEditingUser(null);
+      return;
+    }
+    if (newRole === 'Pending User') {
+      window.alert('You cannot set a user back to Pending from this screen.');
+      return;
+    }
+    setActionError(null);
+    setBusy(true);
+    try {
+      if (user.role === 'Pending User') {
+        await approveUserApi(Number(user.id), frontendRoleToApiRole(newRole));
+      } else {
+        await updateUserRoleApi(user.id, frontendRoleToApiRole(newRole));
+      }
+      await loadUsers();
+      setEditingUser(null);
+    } catch (e) {
+      setActionError(apiErrorMessage(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const handleDeleteUser = (userId: string, userName: string) => {
-    if (confirm(`Remove ${userName} from the system?`)) {
-      removeUser(userId);
+  const handleDeleteUser = async (userId: string, userName: string) => {
+    if (currentUser?.id === userId) {
+      window.alert('You cannot remove your own account from here.');
+      return;
+    }
+    if (!confirm(`Remove ${userName} from the system? This cannot be undone.`)) return;
+    setActionError(null);
+    setBusy(true);
+    try {
+      await rejectUserApi(Number(userId));
+      await loadUsers();
+    } catch (e) {
+      setActionError(apiErrorMessage(e));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -84,12 +188,23 @@ export function EmployeesManagementPage() {
     <div className="mx-auto min-h-full max-w-6xl space-y-8 pb-12">
       <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-gradient-to-br from-white via-slate-50/50 to-blue-50/30 p-8 shadow-sm">
         <div>
-          <h1 className="flex items-center gap-3 text-3xl font-light tracking-tight text-slate-800">
-            <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-600 text-white shadow-lg shadow-blue-200/50">
-              <ShieldCheck className="h-7 w-7" />
-            </span>
-            Employees management
-          </h1>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <h1 className="flex items-center gap-3 text-3xl font-light tracking-tight text-slate-800">
+              <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-600 text-white shadow-lg shadow-blue-200/50">
+                <ShieldCheck className="h-7 w-7" />
+              </span>
+              Employees management
+            </h1>
+            <button
+              type="button"
+              onClick={() => void loadUsers()}
+              disabled={loading || busy}
+              className="inline-flex items-center justify-center gap-2 self-start rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50 sm:self-auto"
+            >
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Refresh from server
+            </button>
+          </div>
         </div>
 
         <div className="mt-8 space-y-4 rounded-2xl border border-slate-100 bg-white/80 p-4 shadow-inner backdrop-blur-sm sm:p-5">
@@ -132,7 +247,14 @@ export function EmployeesManagementPage() {
             Showing <span className="font-semibold text-slate-700">{filteredUsers.length}</span> user
             {filteredUsers.length !== 1 ? 's' : ''}
             {roleFilter !== 'All' ? ` · ${roleFilter}` : ''}
+            {loading ? ' · Loading…' : ''}
           </p>
+          {loadError ? (
+            <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">{loadError}</p>
+          ) : null}
+          {actionError && !editingUser ? (
+            <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">{actionError}</p>
+          ) : null}
         </div>
       </div>
 
@@ -141,7 +263,11 @@ export function EmployeesManagementPage() {
           <Users className="h-5 w-5 text-slate-500" />
           User directory
         </h2>
-        {filteredUsers.length === 0 ? (
+        {loading && filteredUsers.length === 0 ? (
+          <div className="flex justify-center rounded-2xl border border-slate-200 bg-white py-20">
+            <Loader2 className="h-10 w-10 animate-spin text-blue-600" aria-label="Loading users" />
+          </div>
+        ) : filteredUsers.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 py-16 text-center">
             <p className="text-sm font-medium text-slate-600">No users match these filters.</p>
             <p className="mt-1 text-xs text-slate-400">Try another role tab or clear the Unique ID search.</p>
@@ -158,8 +284,19 @@ export function EmployeesManagementPage() {
                   <div className="h-1.5 bg-gradient-to-r from-blue-500 via-indigo-500 to-violet-500" />
                   <div className="flex flex-1 flex-col p-6">
                     <div className="flex items-start gap-4">
-                      <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-slate-100 to-slate-50 text-lg font-bold text-slate-700 ring-1 ring-slate-200/80">
-                        {user.name.charAt(0)}
+                      <div className="relative flex h-14 w-14 shrink-0 overflow-hidden rounded-2xl bg-gradient-to-br from-slate-100 to-slate-50 ring-1 ring-slate-200/80">
+                        {user.avatar?.trim() ? (
+                          // eslint-disable-next-line @next/next/no-img-element -- CDN / data URL from profile API
+                          <img
+                            src={user.avatar}
+                            alt=""
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <span className="flex h-full w-full items-center justify-center text-lg font-bold text-slate-700">
+                            {user.name.charAt(0) || '?'}
+                          </span>
+                        )}
                       </div>
                       <div className="min-w-0 flex-1">
                         <p className="truncate font-semibold text-slate-900">{user.name}</p>
@@ -177,6 +314,16 @@ export function EmployeesManagementPage() {
                             <Hash className="h-3 w-3 text-slate-400" />
                             {uid}
                           </span>
+                          {user.isVerified === false ? (
+                            <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                              Email unverified
+                            </span>
+                          ) : null}
+                          {user.isApproved === false ? (
+                            <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-semibold text-violet-800">
+                              Awaiting approval
+                            </span>
+                          ) : null}
                         </div>
                         {user.team ? (
                           <p className="mt-3 text-xs text-slate-500">
@@ -191,16 +338,21 @@ export function EmployeesManagementPage() {
                     <div className="mt-6 flex flex-wrap gap-2 border-t border-slate-100 pt-5">
                       <button
                         type="button"
-                        onClick={() => setEditingUser(user)}
-                        className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-white shadow-md shadow-blue-200/50 transition hover:from-blue-700 hover:to-indigo-700 min-[360px]:flex-initial"
+                        onClick={() => {
+                          setActionError(null);
+                          setEditingUser(user);
+                        }}
+                        disabled={busy}
+                        className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-white shadow-md shadow-blue-200/50 transition hover:from-blue-700 hover:to-indigo-700 disabled:opacity-50 min-[360px]:flex-initial"
                       >
                         <Sparkles className="h-3.5 w-3.5" />
                         Promote / role
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleDeleteUser(user.id, user.name)}
-                        className="inline-flex items-center justify-center rounded-xl border border-rose-200 bg-rose-50/80 px-4 py-2.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100"
+                        onClick={() => void handleDeleteUser(user.id, user.name)}
+                        disabled={busy || currentUser?.id === user.id}
+                        className="inline-flex items-center justify-center rounded-xl border border-rose-200 bg-rose-50/80 px-4 py-2.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-50"
                         title="Remove user"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -219,7 +371,10 @@ export function EmployeesManagementPage() {
           className="animate-in fade-in fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm duration-300"
           role="presentation"
           onClick={(e) => {
-            if (e.target === e.currentTarget) setEditingUser(null);
+            if (e.target === e.currentTarget) {
+              setActionError(null);
+              setEditingUser(null);
+            }
           }}
         >
           <div
@@ -230,6 +385,7 @@ export function EmployeesManagementPage() {
               <button
                 type="button"
                 onClick={() => {
+                  setActionError(null);
                   setEditingUser(null);
                 }}
                 className="absolute right-6 top-6 rounded-full p-2 transition hover:bg-slate-50"
@@ -246,34 +402,34 @@ export function EmployeesManagementPage() {
               </p>
             </div>
             <div className="space-y-3 p-8">
-              {MANAGEABLE_ROLES.map((r) => (
-                <button
-                  key={r}
-                  type="button"
-                  onClick={() => {
-                    if (r === 'Team Leader') {
-                      const onTeam = editingUser.team?.trim();
-                      updateUser(editingUser.id, {
-                        role: 'Team Leader',
-                        ...(onTeam
-                          ? { team: onTeam, workSite: editingUser.workSite }
-                          : { team: undefined, workSite: undefined }),
-                      });
-                      setEditingUser(null);
-                    } else {
-                      handleUpdateRole(editingUser.id, r);
-                    }
-                  }}
-                  className={`flex w-full items-center justify-between rounded-2xl border px-6 py-4 text-sm font-bold transition ${
-                    editingUser.role === r
-                      ? 'border-blue-200 bg-blue-50 text-blue-800'
-                      : 'border-slate-100 bg-white text-slate-600 hover:border-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  {r === 'Pending User' ? 'Pending User' : r}
-                  {editingUser.role === r ? <Check className="h-4 w-4 text-blue-600" /> : null}
-                </button>
-              ))}
+              {actionError ? (
+                <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-center text-xs text-rose-800">
+                  {actionError}
+                </p>
+              ) : null}
+              {promoteRoleOptions.length === 0 ? (
+                <p className="text-center text-sm text-slate-500">No role changes available for this account.</p>
+              ) : (
+                promoteRoleOptions.map((r) => (
+                  <button
+                    key={r}
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void submitRoleChange(editingUser, r)}
+                    className={`flex w-full items-center justify-between rounded-2xl border px-6 py-4 text-sm font-bold transition disabled:opacity-50 ${
+                      editingUser.role === r
+                        ? 'border-blue-200 bg-blue-50 text-blue-800'
+                        : 'border-slate-100 bg-white text-slate-600 hover:border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      {busy ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
+                      {r}
+                    </span>
+                    {editingUser.role === r ? <Check className="h-4 w-4 text-blue-600" /> : null}
+                  </button>
+                ))
+              )}
             </div>
           </div>
         </div>

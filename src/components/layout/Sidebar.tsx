@@ -6,7 +6,8 @@ import Link from 'next/link';
 import { BRAND_LOGO_URL } from '@/lib/brand';
 import { usePathname, useRouter } from 'next/navigation';
 import { useStore } from '@/lib/store';
-import Cookies from 'js-cookie';
+import { clearSessionCookies } from '@/views/auth/authSession';
+import { logoutFromApi } from '@/services/auth.service';
 import { cn } from '@/lib/utils';
 import { totalUnreadMessagesForViewer } from '@/lib/messaging';
 import { subscribeChatSocket } from '@/lib/chat-socket';
@@ -135,8 +136,8 @@ export function Sidebar() {
               <button
                 key={item.name}
                 onClick={() => {
-                  Cookies.remove('auth-role');
-                  Cookies.remove('auth-user-id');
+                  void logoutFromApi();
+                  clearSessionCookies();
                   setCurrentUser(null);
                   router.push('/auth/login');
                   router.refresh();

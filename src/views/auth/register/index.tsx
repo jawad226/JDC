@@ -4,20 +4,16 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Eye, EyeOff, Loader2, Lock, Mail, Phone, User, Building2 } from 'lucide-react';
-import { useStore, type Department } from '@/lib/store';
+import type { Department } from '@/lib/store';
 import AuthShell from '@/views/auth/AuthShell';
 import { AuthAlerts } from '@/views/auth/AuthAlerts';
 import { AUTH_INPUT_COMPACT_CLASS, DEPARTMENTS } from '@/views/auth/authConstants';
-import { commitSession } from '@/views/auth/authSession';
+import { registerWithApi } from '@/services/auth.service';
 
 export default function RegisterView() {
   const router = useRouter();
-  const setCurrentUser = useStore((s) => s.setCurrentUser);
-  const registerUser = useStore((s) => s.registerUser);
-
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
   const [showPw, setShowPw] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -28,10 +24,9 @@ export default function RegisterView() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setSuccess(null);
     setLoading(true);
     try {
-      const res = registerUser({
+      const res = await registerWithApi({
         name,
         email,
         password,
@@ -42,11 +37,12 @@ export default function RegisterView() {
         setError(res.error);
         return;
       }
-      setSuccess('Account created. You can sign in after admin approval — signing you in as pending user.');
-      setCurrentUser(res.user);
-      commitSession(res.user);
-      router.push('/pending');
-      router.refresh();
+      const trimmedEmail = email.trim().toLowerCase();
+      const q = new URLSearchParams({
+        registered: '1',
+        email: trimmedEmail,
+      });
+      router.replace(`/auth/login?${q.toString()}`);
     } finally {
       setLoading(false);
     }
@@ -56,11 +52,10 @@ export default function RegisterView() {
     <AuthShell title="Create account" wide compact>
       <AuthAlerts
         error={error}
-        success={success}
+        success={null}
         compact
         onDismiss={() => {
           setError(null);
-          setSuccess(null);
         }}
       />
       <form onSubmit={handleSubmit} className="space-y-2 sm:space-y-2.5">

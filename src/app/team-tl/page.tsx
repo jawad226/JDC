@@ -3,6 +3,7 @@
 import { useMemo, useState, useEffect } from 'react';
 import {
   AlertCircle,
+  BookOpen,
   Building2,
   CheckCircle2,
   Shield,
@@ -12,8 +13,22 @@ import {
   X,
   ChevronDown,
   Menu,
+  Loader2,
+  UserMinus,
+  Trash2,
 } from 'lucide-react';
-import { useStore, useShallow } from '@/lib/store';
+import { isAxiosError } from 'axios';
+import { useStore, useShallow, type User } from '@/lib/store';
+import {
+  addEmployeesApi,
+  buildUsersWithResolvedTeams,
+  createTeamApi,
+  deleteTeamApi,
+  detachMemberApi,
+  findTeamRowByName,
+  findTwoTeamRowsByName,
+  moveMemberApi,
+} from '@/services/team.service';
 import { cn } from '@/lib/utils';
 import { AttendanceLogPagination } from '@/components/attendance/attendanceLogUi';
 
@@ -23,35 +38,42 @@ function sameTeamName(userTeam: string | undefined, filterTeam: string): boolean
   return (userTeam?.trim() ?? '') === filterTeam.trim();
 }
 
-function initials(name: string) {
-  const p = name.trim().split(/\s+/).filter(Boolean);
-  if (p.length === 0) return '?';
-  if (p.length === 1) return p[0].slice(0, 2).toUpperCase();
-  return (p[0][0] + p[p.length - 1][0]).toUpperCase();
+/** Team roster “Department” column: team `workSite` (from API `teams.department`), else profile `department`. */
+function displayRosterDepartment(member: User, teamLeader?: User | null): string {
+  const ws = member.workSite?.trim();
+  if (ws) return ws;
+  const prof = member.department != null ? String(member.department).trim() : '';
+  if (prof) return prof;
+  if (teamLeader) {
+    const tw = teamLeader.workSite?.trim();
+    if (tw) return tw;
+    const tp = teamLeader.department != null ? String(teamLeader.department).trim() : '';
+    if (tp) return tp;
+  }
+  return '—';
+}
+
+function apiErrorMessage(e: unknown): string {
+  if (
+    isAxiosError(e) &&
+    e.response?.data &&
+    typeof e.response.data === 'object' &&
+    e.response.data !== null &&
+    'message' in e.response.data
+  ) {
+    return String((e.response.data as { message: unknown }).message);
+  }
+  if (e instanceof Error) return e.message;
+  return 'Request failed';
 }
 
 export default function TeamAssignTLPage() {
-  const {
-    users,
-    teams,
-    configureTeamAssignment,
-    setTeamLeaderForTeam,
-    removeUserFromTeamRoster,
-    shiftUserToTeam,
-    addEmployeesToTeam,
-    updateUser,
-    currentUser,
-  } = useStore(
+  const { users, teams, currentUser, replaceDirectoryUsers } = useStore(
     useShallow((s) => ({
       users: s.users,
       teams: s.teams,
-      configureTeamAssignment: s.configureTeamAssignment,
-      setTeamLeaderForTeam: s.setTeamLeaderForTeam,
-      removeUserFromTeamRoster: s.removeUserFromTeamRoster,
-      shiftUserToTeam: s.shiftUserToTeam,
-      addEmployeesToTeam: s.addEmployeesToTeam,
-      updateUser: s.updateUser,
       currentUser: s.currentUser,
+      replaceDirectoryUsers: s.replaceDirectoryUsers,
     }))
   );
 
@@ -70,6 +92,12 @@ export default function TeamAssignTLPage() {
   const [departmentName, setDepartmentName] = useState('');
 
   const [addToTeamIds, setAddToTeamIds] = useState<Set<string>>(() => new Set());
+  const [savingTeam, setSavingTeam] = useState(false);
+  const [deletingTeam, setDeletingTeam] = useState(false);
+  const [detachingId, setDetachingId] = useState<string | null>(null);
+  const [addingEmployees, setAddingEmployees] = useState(false);
+  const [shiftingMemberId, setShiftingMemberId] = useState<string | null>(null);
+  const [assigningLeader, setAssigningLeader] = useState(false);
 
   const teamLeadersWithoutTeam = useMemo(
     () => users.filter((u) => u.role === 'Team Leader' && !(u.team?.trim())),
@@ -84,17 +112,23 @@ export default function TeamAssignTLPage() {
     return [...new Set(list)].sort((a, b) => a.localeCompare(b));
   }, [teams]);
 
-  /** For a chosen team: existing TL(s), or if none yet — anyone on that team who can become TL (promote on select). */
+  /** Team leaders on this team + **unassigned** TLs (no `team`) so they can be placed via `move-member`. */
   const leaderChoices = useMemo(() => {
     if (teamNameFilter === TEAM_ALL) {
       return users.filter((u) => u.role === 'Team Leader' && u.team);
     }
     const t = teamNameFilter.trim();
-    const tls = users.filter((u) => u.role === 'Team Leader' && sameTeamName(u.team, t));
-    if (tls.length > 0) return tls;
-    return users.filter(
-      (u) => sameTeamName(u.team, t) && u.role !== 'Team Leader' && u.role !== 'Admin'
-    );
+    const onTeam = users.filter((u) => u.role === 'Team Leader' && sameTeamName(u.team, t));
+    const unassigned = users.filter((u) => u.role === 'Team Leader' && !(u.team?.trim()));
+    const seen = new Set<string>();
+    const merged: User[] = [];
+    for (const u of [...onTeam, ...unassigned]) {
+      if (!seen.has(u.id)) {
+        seen.add(u.id);
+        merged.push(u);
+      }
+    }
+    return merged;
   }, [users, teamNameFilter]);
 
   useEffect(() => {
@@ -109,27 +143,39 @@ export default function TeamAssignTLPage() {
     }
   }, [teams, teamNameFilter]);
 
+  useEffect(() => {
+    if (!currentUser || (currentUser.role !== 'Admin' && currentUser.role !== 'HR')) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const fresh = await buildUsersWithResolvedTeams();
+        if (!cancelled) replaceDirectoryUsers(fresh);
+      } catch {
+        /* offline or401 — keep local roster */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.id, currentUser?.role, replaceDirectoryUsers]);
+
   const selectedLeader = useMemo(
     () => users.find((u) => u.id === selectedLeaderId),
     [users, selectedLeaderId]
   );
 
-  /** Team context from TL selection, or from Team name filter (e.g. Alpha) before a leader is chosen. */
+  /** Team context: TL’s team, or filtered team name when TL is still unassigned. */
   const selectedTeam = useMemo(() => {
     if (selectedLeaderId) {
       const p = users.find((u) => u.id === selectedLeaderId);
-      return (p?.team ?? '').trim();
+      const fromUser = (p?.team ?? '').trim();
+      if (fromUser) return fromUser;
+      if (teamNameFilter !== TEAM_ALL) return teamNameFilter.trim();
+      return '';
     }
     if (teamNameFilter !== TEAM_ALL) return teamNameFilter.trim();
     return '';
   }, [selectedLeaderId, teamNameFilter, users]);
-
-  const teamLeadersForTeamChange = useMemo(() => {
-    if (!selectedTeam) return [];
-    return users.filter(
-      (u) => u.role === 'Team Leader' && (!u.team || sameTeamName(u.team, selectedTeam))
-    );
-  }, [users, selectedTeam]);
 
   /** Employees with no team — shown when creating the first roster or adding to existing teams. */
   const employeesWithoutTeam = useMemo(
@@ -151,7 +197,7 @@ export default function TeamAssignTLPage() {
           name: leader.name,
           email: leader.email,
           team,
-          site: leader.workSite || '—',
+          site: displayRosterDepartment(leader, leader),
           role: 'Team Leader',
         });
         for (const m of users.filter((u) => sameTeamName(u.team, team) && u.role === 'Employee')) {
@@ -160,7 +206,7 @@ export default function TeamAssignTLPage() {
             name: m.name,
             email: m.email,
             team,
-            site: m.workSite || leader.workSite || '—',
+            site: displayRosterDepartment(m, leader),
             role: 'Employee',
           });
         }
@@ -174,18 +220,30 @@ export default function TeamAssignTLPage() {
       if (b.role === 'Team Leader' && a.role !== 'Team Leader') return 1;
       return a.name.localeCompare(b.name);
     });
+    const tl = onTeam.find((u) => u.role === 'Team Leader') ?? null;
     for (const m of onTeam) {
       rows.push({
         id: m.role === 'Team Leader' ? `tl-${m.id}` : m.id,
         name: m.name,
         email: m.email,
         team,
-        site: m.workSite || '—',
+        site: displayRosterDepartment(m, tl),
         role: m.role,
       });
     }
     return rows;
   }, [users, selectedTeam, selectedLeaderId]);
+
+  const teamDepartmentSummary = useMemo(() => {
+    if (!selectedTeam) return '—';
+    const onTeam = users.filter((u) => sameTeamName(u.team, selectedTeam));
+    const tl = onTeam.find((u) => u.role === 'Team Leader') ?? null;
+    for (const u of onTeam) {
+      const d = displayRosterDepartment(u, tl);
+      if (d !== '—') return d;
+    }
+    return '—';
+  }, [users, selectedTeam]);
 
   const totalPages = Math.max(1, Math.ceil(tableRows.length / rowsPerPage) || 1);
   const pageSafe = Math.min(page, totalPages);
@@ -203,11 +261,6 @@ export default function TeamAssignTLPage() {
     [teams, selectedTeam]
   );
 
-  const setMsg = (r: { ok: true } | { ok: false; error: string }, okText: string) => {
-    if (r.ok) setMessage({ type: 'ok', text: okText });
-    else setMessage({ type: 'err', text: r.error });
-  };
-
   const openAssignModal = () => {
     setMessage(null);
     setLeaderId('');
@@ -219,25 +272,76 @@ export default function TeamAssignTLPage() {
 
   const closeModal = () => setModalOpen(false);
 
-  const handleModalSubmit = (e: React.FormEvent) => {
+  const handleModalSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setMessage(null);
     const tn = modalTeamName.trim();
-    const result = configureTeamAssignment({
-      teamName: tn,
-      leaderUserId: leaderId,
-      employeeIds: [...selectedEmployees],
-      siteName: departmentName.trim(),
-    });
-    if (result.ok) {
-      setMessage({ type: 'ok', text: 'Team roster saved successfully.' });
-      const newLeader = useStore.getState().users.find((u) => u.id === leaderId);
+    const site = departmentName.trim();
+    const uniqueEmployees = [...new Set([...selectedEmployees])];
+
+    if (!tn) {
+      setMessage({ type: 'err', text: 'Enter a team name.' });
+      return;
+    }
+    if (!site) {
+      setMessage({ type: 'err', text: 'Enter a department name.' });
+      return;
+    }
+    if (!leaderId || uniqueEmployees.length < 1) {
+      setMessage({ type: 'err', text: 'Choose a team leader and at least one employee.' });
+      return;
+    }
+    if (uniqueEmployees.includes(leaderId)) {
+      setMessage({ type: 'err', text: 'Team leader cannot be selected as an employee.' });
+      return;
+    }
+    const leader = users.find((u) => u.id === leaderId);
+    if (!leader || leader.role !== 'Team Leader') {
+      setMessage({ type: 'err', text: 'Choose a user with the Team Leader role.' });
+      return;
+    }
+    if (leader.team && leader.team !== tn) {
+      setMessage({
+        type: 'err',
+        text: `${leader.name} is already a leader on another team. Remove them first or pick another leader.`,
+      });
+      return;
+    }
+    for (const id of uniqueEmployees) {
+      const u = users.find((x) => x.id === id);
+      if (!u || u.role !== 'Employee') {
+        setMessage({ type: 'err', text: 'Employees only: pick users with the Employee role.' });
+        return;
+      }
+      if (u.team) {
+        setMessage({
+          type: 'err',
+          text: `${u.name} is already assigned to a team. Remove them from that team first.`,
+        });
+        return;
+      }
+    }
+
+    setSavingTeam(true);
+    try {
+      await createTeamApi({
+        name: tn,
+        department: site,
+        leader_id: Number(leaderId),
+        employee_ids: uniqueEmployees.map(Number),
+      });
+      const fresh = await buildUsersWithResolvedTeams();
+      replaceDirectoryUsers(fresh);
+      setMessage({ type: 'ok', text: 'Team saved to the database.' });
+      const newLeader = fresh.find((u) => u.id === leaderId);
       if (newLeader) setSelectedLeaderId(newLeader.id);
       if (newLeader?.team) setTeamNameFilter(newLeader.team);
       closeModal();
       setSelectedEmployees(new Set());
-    } else {
-      setMessage({ type: 'err', text: result.error });
+    } catch (err) {
+      setMessage({ type: 'err', text: apiErrorMessage(err) });
+    } finally {
+      setSavingTeam(false);
     }
   };
 
@@ -259,15 +363,88 @@ export default function TeamAssignTLPage() {
     });
   };
 
-  const handleAddEmployeesToTeam = () => {
+  const handleAddEmployeesToTeam = async () => {
     if (!selectedTeam) return;
     setMessage(null);
-    const r = addEmployeesToTeam(selectedTeam, [...addToTeamIds]);
-    setMsg(r, 'Employee(s) added to this team.');
-    if (r.ok) setAddToTeamIds(new Set());
+    setAddingEmployees(true);
+    try {
+      const match = await findTeamRowByName(selectedTeam);
+      if (!match) {
+        setMessage({ type: 'err', text: 'Team not found on server. Refresh the page and try again.' });
+        return;
+      }
+      await addEmployeesApi(
+        Number(match.id),
+        [...addToTeamIds].map((id) => Number(id))
+      );
+      const fresh = await buildUsersWithResolvedTeams();
+      replaceDirectoryUsers(fresh);
+      setAddToTeamIds(new Set());
+      setMessage({ type: 'ok', text: 'Employee(s) added to this team.' });
+    } catch (err) {
+      setMessage({ type: 'err', text: apiErrorMessage(err) });
+    } finally {
+      setAddingEmployees(false);
+    }
   };
 
-  const handleLeaderSelect = (id: string) => {
+  const detachMemberFromSelectedTeam = async (memberId: string) => {
+    const tn = selectedTeam?.trim();
+    if (!tn) {
+      setMessage({ type: 'err', text: 'Select a team first.' });
+      return;
+    }
+    setMessage(null);
+    setDetachingId(memberId);
+    try {
+      const match = await findTeamRowByName(tn);
+      if (!match) {
+        setMessage({ type: 'err', text: 'Team not found on server. Refresh the page and try again.' });
+        return;
+      }
+      await detachMemberApi(Number(match.id), Number(memberId));
+      const fresh = await buildUsersWithResolvedTeams();
+      replaceDirectoryUsers(fresh);
+      setMessage({ type: 'ok', text: 'Employee removed from team.' });
+    } catch (err) {
+      setMessage({ type: 'err', text: apiErrorMessage(err) });
+    } finally {
+      setDetachingId(null);
+    }
+  };
+
+  const handleDeleteFullTeam = async () => {
+    if (!selectedTeam || !teams.includes(selectedTeam)) return;
+    if (
+      !confirm(
+        `Delete team “${selectedTeam}” from the server? All members will be unassigned from this team.`
+      )
+    ) {
+      return;
+    }
+    setMessage(null);
+    setDeletingTeam(true);
+    try {
+      const match = await findTeamRowByName(selectedTeam);
+      if (!match) {
+        setMessage({ type: 'err', text: 'Team not found on server. Refresh the page and try again.' });
+        return;
+      }
+      await deleteTeamApi(Number(match.id));
+      const fresh = await buildUsersWithResolvedTeams();
+      replaceDirectoryUsers(fresh);
+      setTeamNameFilter(TEAM_ALL);
+      setSelectedLeaderId('');
+      setAddToTeamIds(new Set());
+      setMessage({ type: 'ok', text: 'Team deleted.' });
+    } catch (err) {
+      setMessage({ type: 'err', text: apiErrorMessage(err) });
+    } finally {
+      setDeletingTeam(false);
+    }
+  };
+
+  const handleLeaderSelect = async (id: string) => {
     setMessage(null);
     setAddToTeamIds(new Set());
     if (!id) {
@@ -277,21 +454,28 @@ export default function TeamAssignTLPage() {
     const person = users.find((u) => u.id === id);
     const scopedTeam = teamNameFilter !== TEAM_ALL ? teamNameFilter.trim() : '';
     if (
-      person &&
+      person?.role === 'Team Leader' &&
       scopedTeam &&
-      sameTeamName(person.team, scopedTeam) &&
-      person.role !== 'Team Leader' &&
-      person.role !== 'Admin'
+      !(person.team?.trim())
     ) {
-      updateUser(id, {
-        role: 'Team Leader',
-        team: scopedTeam,
-        workSite: person.workSite,
-      });
-      setMessage({
-        type: 'ok',
-        text: `${person.name} is now Team Leader for ${scopedTeam}.`,
-      });
+      setAssigningLeader(true);
+      try {
+        const teamRow = await findTeamRowByName(scopedTeam);
+        if (!teamRow) {
+          setMessage({ type: 'err', text: 'Team not found on server. Create the team first (+).' });
+          return;
+        }
+        await moveMemberApi(Number(person.id), Number(teamRow.id));
+        const fresh = await buildUsersWithResolvedTeams();
+        replaceDirectoryUsers(fresh);
+        setSelectedLeaderId(person.id);
+        setMessage({ type: 'ok', text: `${person.name} assigned to ${scopedTeam}.` });
+      } catch (err) {
+        setMessage({ type: 'err', text: apiErrorMessage(err) });
+      } finally {
+        setAssigningLeader(false);
+      }
+      return;
     }
     setSelectedLeaderId(id);
   };
@@ -301,16 +485,15 @@ export default function TeamAssignTLPage() {
   }
 
   return (
-    <div className="min-h-full bg-slate-50/80">
+    <div className="min-h-full bg-gradient-to-b from-slate-100/90 via-slate-50 to-white">
       <div className="mx-auto max-w-[1200px] px-4 pb-12 pt-6 sm:px-6">
-        {/* Title row — Timesheet-style */}
-        <div className="mb-6 flex flex-wrap items-center gap-3">
+        <div className="mb-8 flex flex-wrap items-center gap-3">
           <Menu className="h-7 w-7 shrink-0 text-slate-600 lg:hidden" aria-hidden />
-          <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">Team Assignment</h1>
+          <div>
+            <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">Team Assignment</h1>
+          </div>
         </div>
-
-        {/* Filter bar + primary action */}
-        <div className="mb-6 flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="mb-6 flex flex-col gap-4 rounded-2xl border border-slate-200/80 bg-white/95 p-4 shadow-md shadow-slate-200/40 ring-1 ring-slate-200/60 backdrop-blur-sm sm:p-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
             <label className="flex min-w-0 flex-col gap-1.5 text-xs font-semibold text-slate-600">
@@ -347,22 +530,20 @@ export default function TeamAssignTLPage() {
                 <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <select
                   value={selectedLeaderId}
-                  onChange={(e) => handleLeaderSelect(e.target.value)}
-                  className="w-full appearance-none rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-3 pr-9 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-100"
+                  disabled={assigningLeader}
+                  onChange={(e) => void handleLeaderSelect(e.target.value)}
+                  className="w-full appearance-none rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-3 pr-9 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-100 disabled:opacity-60"
                 >
                   <option value="">
                     {teamNameFilter === TEAM_ALL
                       ? 'Select team leader…'
                       : leaderChoices.length === 0
-                        ? 'No TL yet — add members or pick below'
+                        ? 'No TL on this team or unassigned — set role in Admin, then refresh'
                         : 'Select team leader…'}
                   </option>
                   {leaderChoices.map((u) => (
                     <option key={u.id} value={u.id}>
-                      {u.name}
-                      {u.role === 'Team Leader'
-                        ? ` · ${u.team} · TL`
-                        : ` · ${u.team?.trim() ?? ''} · ${u.role} → set as leader`}
+                      {u.name} · {u.team?.trim() ? `${u.team} · ` : 'Unassigned · '}TL
                     </option>
                   ))}
                 </select>
@@ -384,36 +565,57 @@ export default function TeamAssignTLPage() {
 
         {/* Summary when a team is in scope (filter and/or selected leader) */}
         {selectedTeam ? (
-          <div className="mb-4 flex flex-wrap items-center gap-3 text-sm text-slate-600">
-            <span className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 font-medium text-slate-800 shadow-sm ring-1 ring-slate-200/80">
-              <UserCog className="h-4 w-4 text-blue-600" aria-hidden />
-              Team: <strong className="text-slate-900">{selectedTeam}</strong>
-            </span>
-            <span className="inline-flex items-center gap-1.5 text-slate-500">
-              <Building2 className="h-4 w-4 shrink-0" />
-              <span className="text-slate-400">Dept.</span>{' '}
-              <span className="font-medium text-slate-700">
-                {selectedLeader?.workSite ||
-                  users.find((u) => sameTeamName(u.team, selectedTeam))?.workSite ||
-                  '—'}
+          <div className="mb-5 flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-md shadow-blue-500/25">
+                <UserCog className="h-4 w-4 opacity-90" aria-hidden />
+                <span className="opacity-90">Team</span>
+                <strong className="font-semibold tracking-tight">{selectedTeam}</strong>
               </span>
+              {teams.includes(selectedTeam) ? (
+                <button
+                  type="button"
+                  disabled={deletingTeam}
+                  onClick={() => void handleDeleteFullTeam()}
+                  title="Delete entire team (server)"
+                  aria-label={`Delete team ${selectedTeam}`}
+                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-rose-200 bg-rose-50 text-rose-700 shadow-sm transition hover:bg-rose-100 disabled:opacity-50"
+                >
+                  {deletingTeam ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                  ) : (
+                    <Trash2 className="h-4 w-4" aria-hidden />
+                  )}
+                </button>
+              ) : null}
+            </div>
+            <span
+              className={cn(
+                'inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm shadow-sm',
+                teamDepartmentSummary === '—'
+                  ? 'border-slate-200 bg-white text-slate-400'
+                  : 'border-emerald-200/80 bg-emerald-50/90 text-emerald-900'
+              )}
+            >
+              <Building2 className="h-4 w-4 shrink-0 opacity-80" aria-hidden />
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Department</span>
+              <span className="font-semibold text-slate-800">{teamDepartmentSummary}</span>
             </span>
           </div>
         ) : null}
 
-        {/* Table — blue header like reference */}
-        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-lg shadow-slate-200/50 ring-1 ring-slate-200/40">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[640px] text-left text-sm">
+            <table className="w-full min-w-[680px] text-left text-sm">
               <thead>
-                <tr className="bg-blue-600 text-white">
-                  <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide">Sr#</th>
-                  <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide">Name</th>
-                  <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide">Email</th>
-                  <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide">Team</th>
-                  <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide">Department</th>
-                  <th className="px-4 py-3 text-xs font-bold uppercase tracking-wide">Role</th>
-                  <th className="px-4 py-3 text-right text-xs font-bold uppercase tracking-wide">Actions</th>
+                <tr className="bg-gradient-to-r from-blue-600 via-blue-600 to-indigo-600 text-white">
+                  <th className="px-4 py-3.5 text-xs font-bold uppercase tracking-wide">Sr#</th>
+                  <th className="px-4 py-3.5 text-xs font-bold uppercase tracking-wide">Name</th>
+                  <th className="px-4 py-3.5 text-xs font-bold uppercase tracking-wide">Email</th>
+                  <th className="px-4 py-3.5 text-xs font-bold uppercase tracking-wide">Team</th>
+                  <th className="px-4 py-3.5 text-xs font-bold uppercase tracking-wide">Department</th>
+                  <th className="px-4 py-3.5 text-xs font-bold uppercase tracking-wide">Role</th>
+                  <th className="px-4 py-3.5 text-right text-xs font-bold uppercase tracking-wide">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -422,7 +624,7 @@ export default function TeamAssignTLPage() {
                     <td colSpan={7} className="px-4 py-16 text-center text-slate-500">
                       <Users className="mx-auto mb-3 h-10 w-10 text-slate-300" />
                       Choose a <strong>Team name</strong> to view that roster, or <strong>All teams</strong> and pick a
-                      team leader.
+                      team leader (Team Leader role is set in Admin).
                     </td>
                   </tr>
                 ) : pagedRows.length === 0 ? (
@@ -440,20 +642,25 @@ export default function TeamAssignTLPage() {
                     return (
                       <tr
                         key={row.id}
-                        className={cn('border-b border-slate-100', globalIndex % 2 === 0 ? 'bg-slate-50/80' : 'bg-white')}
+                        className={cn(
+                          'border-b border-slate-100 transition-colors hover:bg-blue-50/50',
+                          globalIndex % 2 === 0 ? 'bg-slate-50/50' : 'bg-white'
+                        )}
                       >
                         <td className="px-4 py-3 text-slate-600">{globalIndex}</td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            <span className="flex h-8 w-8 items-center justify-center rounded-md bg-slate-200/80 text-xs font-bold text-slate-700">
-                              {initials(row.name)}
-                            </span>
-                            <span className="font-medium text-slate-900">{row.name}</span>
-                          </div>
-                        </td>
+                        <td className="px-4 py-3 font-medium text-slate-900">{row.name}</td>
                         <td className="px-4 py-3 text-slate-600">{row.email}</td>
                         <td className="px-4 py-3 font-medium text-slate-800">{row.team}</td>
-                        <td className="px-4 py-3 text-slate-600">{row.site}</td>
+                        <td className="px-4 py-3">
+                          {row.site !== '—' ? (
+                            <span className="inline-flex items-center gap-1.5 text-slate-700">
+                              <Building2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" aria-hidden />
+                              <span className="font-medium">{row.site}</span>
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">—</span>
+                          )}
+                        </td>
                         <td className="px-4 py-3">
                           <span
                             className={cn(
@@ -468,44 +675,93 @@ export default function TeamAssignTLPage() {
                           {isTl ? (
                             <div className="flex flex-wrap justify-end gap-1">
                               <select
-                                className="max-w-[140px] rounded border border-slate-200 bg-white px-1.5 py-1 text-[11px]"
-                                value={memberId}
+                                className="max-w-[120px] rounded border border-slate-200 bg-white px-1 py-1 text-[11px] disabled:opacity-50"
+                                defaultValue=""
+                                disabled={
+                                  detachingId !== null ||
+                                  shiftingMemberId !== null ||
+                                  assigningLeader
+                                }
                                 onChange={(e) => {
-                                  const r = setTeamLeaderForTeam(selectedTeam, e.target.value);
-                                  setMsg(r, 'Team leader updated.');
-                                  if (r.ok) setSelectedLeaderId(e.target.value);
+                                  const targetName = e.target.value;
+                                  const el = e.target;
+                                  el.value = '';
+                                  if (!targetName) return;
+                                  void (async () => {
+                                    setMessage(null);
+                                    setShiftingMemberId(memberId);
+                                    try {
+                                      const { a: list, b: tgt } = await findTwoTeamRowsByName(
+                                        selectedTeam,
+                                        targetName
+                                      );
+                                      if (!list || !tgt) {
+                                        setMessage({
+                                          type: 'err',
+                                          text: 'Team not found on server. Refresh and try again.',
+                                        });
+                                        return;
+                                      }
+                                      await moveMemberApi(Number(memberId), Number(tgt.id));
+                                      const fresh = await buildUsersWithResolvedTeams();
+                                      replaceDirectoryUsers(fresh);
+                                      setMessage({ type: 'ok', text: 'Team leader moved.' });
+                                    } catch (err) {
+                                      setMessage({ type: 'err', text: apiErrorMessage(err) });
+                                    } finally {
+                                      setShiftingMemberId(null);
+                                    }
+                                  })();
                                 }}
                               >
-                                {teamLeadersForTeamChange.map((u) => (
-                                  <option key={u.id} value={u.id}>
-                                    {u.name}
+                                <option value="">Shift…</option>
+                                {otherTeams.map((t) => (
+                                  <option key={t} value={t}>
+                                    {t}
                                   </option>
                                 ))}
                               </select>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (!confirm('Remove team leader from this team?')) return;
-                                  const r = removeUserFromTeamRoster(memberId);
-                                  setMsg(r, 'Removed.');
-                                  setSelectedLeaderId('');
-                                }}
-                                className="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-semibold text-rose-800"
-                              >
-                                Remove
-                              </button>
                             </div>
                           ) : (
                             <div className="flex flex-wrap justify-end gap-1">
                               <select
-                                className="max-w-[120px] rounded border border-slate-200 bg-white px-1 py-1 text-[11px]"
+                                className="max-w-[120px] rounded border border-slate-200 bg-white px-1 py-1 text-[11px] disabled:opacity-50"
                                 defaultValue=""
+                                disabled={
+                                  detachingId !== null ||
+                                  shiftingMemberId !== null ||
+                                  assigningLeader
+                                }
                                 onChange={(e) => {
-                                  const to = e.target.value;
-                                  if (!to) return;
-                                  const r = shiftUserToTeam(memberId, to);
-                                  setMsg(r, 'Moved.');
-                                  e.target.value = '';
+                                  const targetName = e.target.value;
+                                  const el = e.target;
+                                  el.value = '';
+                                  if (!targetName) return;
+                                  void (async () => {
+                                    setMessage(null);
+                                    setShiftingMemberId(memberId);
+                                    try {
+                                      const { a: list, b: tgt } = await findTwoTeamRowsByName(
+                                        selectedTeam,
+                                        targetName
+                                      );
+                                      if (!list || !tgt) {
+                                        setMessage({
+                                          type: 'err',
+                                          text: 'Team not found on server. Refresh and try again.',
+                                        });
+                                        return;
+                                      }
+                                      await moveMemberApi(Number(memberId), Number(tgt.id));
+                                      const fresh = await buildUsersWithResolvedTeams();
+                                      replaceDirectoryUsers(fresh);
+                                      setMessage({ type: 'ok', text: 'Moved.' });
+                                    } catch (err) {
+                                      setMessage({ type: 'err', text: apiErrorMessage(err) });
+                                    } finally {
+                                      setShiftingMemberId(null);
+                                    }
+                                  })();
                                 }}
                               >
                                 <option value="">Shift…</option>
@@ -517,14 +773,24 @@ export default function TeamAssignTLPage() {
                               </select>
                               <button
                                 type="button"
+                                disabled={
+                                  detachingId !== null ||
+                                  shiftingMemberId !== null ||
+                                  assigningLeader
+                                }
                                 onClick={() => {
                                   if (!confirm(`Remove ${row.name}?`)) return;
-                                  const r = removeUserFromTeamRoster(memberId);
-                                  setMsg(r, 'Removed.');
+                                  void detachMemberFromSelectedTeam(memberId);
                                 }}
-                                className="rounded border border-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-700"
+                                title="Remove from team"
+                                aria-label={`Remove ${row.name} from team`}
+                                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
                               >
-                                Remove
+                                {detachingId === memberId ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                                ) : (
+                                  <UserMinus className="h-4 w-4" aria-hidden />
+                                )}
                               </button>
                             </div>
                           )}
@@ -576,11 +842,12 @@ export default function TeamAssignTLPage() {
             </div>
             <button
               type="button"
-              disabled={addToTeamIds.size < 1}
-              onClick={handleAddEmployeesToTeam}
-              className="mt-3 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+              disabled={addToTeamIds.size < 1 || addingEmployees}
+              onClick={() => void handleAddEmployeesToTeam()}
+              className="mt-3 inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
             >
-              Add selected
+              {addingEmployees ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
+              {addingEmployees ? 'Adding…' : 'Add selected'}
             </button>
           </div>
         ) : selectedTeam && selectedLeader && !teams.includes(selectedTeam) ? (
@@ -697,7 +964,7 @@ export default function TeamAssignTLPage() {
               </div>
 
               <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Employees (min. 2)</span>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Employees (min. 1)</span>
                 <div className="mt-2 max-h-40 overflow-y-auto rounded-lg border border-slate-200 bg-white">
                   {employeesWithoutTeam.length === 0 ? (
                     <p className="p-3 text-center text-xs text-slate-500">
@@ -742,15 +1009,17 @@ export default function TeamAssignTLPage() {
               <button
                 type="submit"
                 disabled={
+                  savingTeam ||
                   teamLeadersWithoutTeam.length === 0 ||
                   !leaderId ||
                   !modalTeamName.trim() ||
                   !departmentName.trim() ||
-                  selectedEmployees.size < 2
+                  selectedEmployees.size < 1
                 }
-                className="w-full rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
               >
-                Create team
+                {savingTeam ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
+                {savingTeam ? 'Saving…' : 'Create team'}
               </button>
             </form>
           </div>
