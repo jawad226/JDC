@@ -8,6 +8,7 @@ import AuthShell from '@/views/auth/AuthShell';
 import { AuthAlerts } from '@/views/auth/AuthAlerts';
 import { AUTH_INPUT_CLASS } from '@/views/auth/authConstants';
 import { forgotPasswordApi, verifyResetOtpApi } from '@/services/auth.service';
+import { validateEmail, validateOtp } from '@/lib/validation/authValidation';
 
 type Step = 'email' | 'otp';
 
@@ -21,11 +22,20 @@ export default function ForgotPasswordView() {
   const [email, setEmail] = useState('');
   const [submittedEmail, setSubmittedEmail] = useState('');
   const [otp, setOtp] = useState('');
+  const [fieldError, setFieldError] = useState<Record<string, string>>({});
 
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccess(null);
+    setFieldError({});
+
+    const em = validateEmail(email);
+    if (!em.ok) {
+      setFieldError({ email: em.error });
+      setError(em.error);
+      return;
+    }
     setLoading(true);
     try {
       const res = await forgotPasswordApi(email);
@@ -47,6 +57,14 @@ export default function ForgotPasswordView() {
     e.preventDefault();
     setError(null);
     setSuccess(null);
+    setFieldError({});
+
+    const o = validateOtp(otp);
+    if (!o.ok) {
+      setFieldError({ otp: o.error });
+      setError(o.error);
+      return;
+    }
     setLoading(true);
     try {
       const res = await verifyResetOtpApi(otp);
@@ -111,6 +129,7 @@ export default function ForgotPasswordView() {
                 autoComplete="email"
               />
             </div>
+            {fieldError.email ? <p className="mt-1 text-xs font-semibold text-rose-600">{fieldError.email}</p> : null}
           </div>
           <button
             type="submit"
@@ -161,6 +180,7 @@ export default function ForgotPasswordView() {
                   placeholder="••••••"
                 />
               </div>
+            {fieldError.otp ? <p className="mt-1 text-xs font-semibold text-rose-600">{fieldError.otp}</p> : null}
             </div>
             <button
               type="submit"

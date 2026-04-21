@@ -9,6 +9,14 @@ import AuthShell from '@/views/auth/AuthShell';
 import { AuthAlerts } from '@/views/auth/AuthAlerts';
 import { AUTH_INPUT_COMPACT_CLASS, DEPARTMENTS } from '@/views/auth/authConstants';
 import { registerWithApi } from '@/services/auth.service';
+import {
+  passwordStrength,
+  validateDepartment,
+  validateEmail,
+  validateName,
+  validatePasswordStrong,
+  validatePhone,
+} from '@/lib/validation/authValidation';
 
 export default function RegisterView() {
   const router = useRouter();
@@ -20,10 +28,31 @@ export default function RegisterView() {
   const [password, setPassword] = useState('');
   const [phone, setPhone] = useState('');
   const [department, setDepartment] = useState<Department>('Web Development');
+  const [fieldError, setFieldError] = useState<Record<string, string>>({});
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setFieldError({});
+
+    const errs: Record<string, string> = {};
+    const n = validateName(name);
+    if (!n.ok) errs.name = n.error;
+    const em = validateEmail(email);
+    if (!em.ok) errs.email = em.error;
+    const ph = validatePhone(phone);
+    if (!ph.ok) errs.phone = ph.error;
+    const dep = validateDepartment(department);
+    if (!dep.ok) errs.department = dep.error;
+    const pw = validatePasswordStrong(password);
+    if (!pw.ok) errs.password = pw.error;
+
+    if (Object.keys(errs).length > 0) {
+      setFieldError(errs);
+      setError(Object.values(errs)[0]);
+      return;
+    }
+
     setLoading(true);
     try {
       const res = await registerWithApi({
@@ -69,11 +98,17 @@ export default function RegisterView() {
               type="text"
               required
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                const raw = e.target.value;
+                // English alphabets + spaces only
+                const cleaned = raw.replace(/[^A-Za-z\s]/g, '').replace(/\s+/g, ' ');
+                setName(cleaned);
+              }}
               className={AUTH_INPUT_COMPACT_CLASS}
               placeholder="Your name"
             />
           </div>
+          {fieldError.name ? <p className="mt-1 text-xs font-semibold text-rose-600">{fieldError.name}</p> : null}
         </div>
         <div>
           <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-500 sm:text-xs">
@@ -90,6 +125,7 @@ export default function RegisterView() {
               placeholder="you@company.com"
             />
           </div>
+          {fieldError.email ? <p className="mt-1 text-xs font-semibold text-rose-600">{fieldError.email}</p> : null}
         </div>
         <div>
           <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-500 sm:text-xs">
@@ -101,11 +137,17 @@ export default function RegisterView() {
               type="tel"
               required
               value={phone}
-              onChange={(e) => setPhone(e.target.value)}
+              onChange={(e) => {
+                const raw = e.target.value;
+                // Digits only (keep it simple and consistent)
+                const cleaned = raw.replace(/\D/g, '').slice(0, 16);
+                setPhone(cleaned);
+              }}
               className={AUTH_INPUT_COMPACT_CLASS}
-              placeholder="+92 300 0000000"
+              placeholder="03000000000"
             />
           </div>
+          {fieldError.phone ? <p className="mt-1 text-xs font-semibold text-rose-600">{fieldError.phone}</p> : null}
         </div>
         <div>
           <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-500 sm:text-xs">
@@ -125,6 +167,9 @@ export default function RegisterView() {
               ))}
             </select>
           </div>
+          {fieldError.department ? (
+            <p className="mt-1 text-xs font-semibold text-rose-600">{fieldError.department}</p>
+          ) : null}
         </div>
         <div>
           <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-500 sm:text-xs">
@@ -135,11 +180,11 @@ export default function RegisterView() {
             <input
               type={showPw ? 'text' : 'password'}
               required
-              minLength={6}
+              minLength={8}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className={`${AUTH_INPUT_COMPACT_CLASS} pr-11`}
-              placeholder="Min. 6 characters"
+              placeholder="8+ chars with upper/lower/number/special"
             />
             <button
               type="button"
@@ -149,6 +194,24 @@ export default function RegisterView() {
               {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
+          {(() => {
+            const s = passwordStrength(password);
+            const item = (ok: boolean, label: string) => (
+              <span className={ok ? 'text-emerald-700' : 'text-slate-400'}>{label}</span>
+            );
+            return (
+              <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[11px] font-semibold">
+                {item(s.minLen, '8+ chars')}
+                {item(s.upper, 'Upper')}
+                {item(s.lower, 'Lower')}
+                {item(s.number, 'Number')}
+                {item(s.special, 'Special')}
+              </div>
+            );
+          })()}
+          {fieldError.password ? (
+            <p className="mt-1 text-xs font-semibold text-rose-600">{fieldError.password}</p>
+          ) : null}
         </div>
         <button
           type="submit"

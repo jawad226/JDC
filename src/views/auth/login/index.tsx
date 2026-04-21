@@ -10,6 +10,7 @@ import { AuthAlerts } from '@/views/auth/AuthAlerts';
 import { AUTH_INPUT_CLASS } from '@/views/auth/authConstants';
 import { commitSession } from '@/views/auth/authSession';
 import { loginWithApi } from '@/services/auth.service';
+import { validateEmail } from '@/lib/validation/authValidation';
 
 export default function SignInView() {
   const router = useRouter();
@@ -23,6 +24,7 @@ export default function SignInView() {
   const [showPw, setShowPw] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [fieldError, setFieldError] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const e = searchParams.get('email');
@@ -38,6 +40,17 @@ export default function SignInView() {
     e.preventDefault();
     setError(null);
     setSuccess(null);
+    setFieldError({});
+
+    const errs: Record<string, string> = {};
+    const em = validateEmail(email);
+    if (!em.ok) errs.email = em.error;
+    if (!String(password || '').trim()) errs.password = 'Password is required.';
+    if (Object.keys(errs).length > 0) {
+      setFieldError(errs);
+      setError(Object.values(errs)[0]);
+      return;
+    }
     setLoading(true);
     try {
       const res = await loginWithApi(email, password);
@@ -73,6 +86,7 @@ export default function SignInView() {
               placeholder="you@company.com"
             />
           </div>
+          {fieldError.email ? <p className="mt-1 text-xs font-semibold text-rose-600">{fieldError.email}</p> : null}
         </div>
         <div>
           <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Password</label>
@@ -96,6 +110,9 @@ export default function SignInView() {
               {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
+          {fieldError.password ? (
+            <p className="mt-1 text-xs font-semibold text-rose-600">{fieldError.password}</p>
+          ) : null}
         </div>
         <div className="flex justify-end">
           <Link href="/auth/forgot-password" className="text-sm font-semibold text-blue-600 hover:text-blue-700">

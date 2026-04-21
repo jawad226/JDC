@@ -8,6 +8,7 @@ import AuthShell from '@/views/auth/AuthShell';
 import { AuthAlerts } from '@/views/auth/AuthAlerts';
 import { AUTH_INPUT_CLASS } from '@/views/auth/authConstants';
 import { resetPasswordApi } from '@/services/auth.service';
+import { passwordStrength, validatePasswordStrong } from '@/lib/validation/authValidation';
 
 export default function ResetPasswordView() {
   const router = useRouter();
@@ -19,13 +20,23 @@ export default function ResetPasswordView() {
   const [showPw2, setShowPw2] = useState(false);
   const [password, setPassword] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
+  const [fieldError, setFieldError] = useState<Record<string, string>>({});
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccess(null);
+    setFieldError({});
+
+    const errs: Record<string, string> = {};
+    const pw = validatePasswordStrong(password);
+    if (!pw.ok) errs.password = pw.error;
     if (password !== passwordConfirm) {
-      setError('Passwords do not match.');
+      errs.passwordConfirm = 'Passwords do not match.';
+    }
+    if (Object.keys(errs).length > 0) {
+      setFieldError(errs);
+      setError(Object.values(errs)[0]);
       return;
     }
     setLoading(true);
@@ -60,7 +71,7 @@ export default function ResetPasswordView() {
             <input
               type={showPw ? 'text' : 'password'}
               required
-              minLength={6}
+              minLength={8}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className={`${AUTH_INPUT_CLASS} pr-11`}
@@ -73,6 +84,24 @@ export default function ResetPasswordView() {
               {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
+          {(() => {
+            const s = passwordStrength(password);
+            const item = (ok: boolean, label: string) => (
+              <span className={ok ? 'text-emerald-700' : 'text-slate-400'}>{label}</span>
+            );
+            return (
+              <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1 text-[11px] font-semibold">
+                {item(s.minLen, '8+ chars')}
+                {item(s.upper, 'Upper')}
+                {item(s.lower, 'Lower')}
+                {item(s.number, 'Number')}
+                {item(s.special, 'Special')}
+              </div>
+            );
+          })()}
+          {fieldError.password ? (
+            <p className="mt-1 text-xs font-semibold text-rose-600">{fieldError.password}</p>
+          ) : null}
         </div>
         <div>
           <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Confirm password</label>
@@ -81,7 +110,7 @@ export default function ResetPasswordView() {
             <input
               type={showPw2 ? 'text' : 'password'}
               required
-              minLength={6}
+              minLength={8}
               value={passwordConfirm}
               onChange={(e) => setPasswordConfirm(e.target.value)}
               className={`${AUTH_INPUT_CLASS} pr-11`}
@@ -94,6 +123,9 @@ export default function ResetPasswordView() {
               {showPw2 ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
+          {fieldError.passwordConfirm ? (
+            <p className="mt-1 text-xs font-semibold text-rose-600">{fieldError.passwordConfirm}</p>
+          ) : null}
         </div>
         <button
           type="submit"
