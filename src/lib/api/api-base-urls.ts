@@ -34,4 +34,18 @@ export const API_PATHS = {
     addEmployees: '/api/teams/add-employees',
     moveMember: '/api/teams/move-member',
   },
+  /**
+   * Task microservice paths (relative to `NEXT_PUBLIC_TASK_API_URL`).
+   * Use with `taskApiClient` / `task-request-handler`.
+   */
+  task: {
+    dailyUpdates: {
+      employeeList: '/api/daily-updates/employee',
+      employeeUpsert: '/api/daily-updates/employee',
+      teamLeaderBundle: '/api/daily-updates/team-leader',
+      teamLeaderUpsertSummary: '/api/daily-updates/team-leader/summary',
+      leadershipOverview: '/api/daily-updates/leadership',
+      hrUpsertSummary: '/api/daily-updates/hr/summary',
+    },
+  },
 } as const;
