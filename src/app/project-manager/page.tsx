@@ -555,6 +555,14 @@ export default function TasksPage() {
   const taskRefLabel = (id: string) =>
     `(TASK-${id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase()})`;
 
+  const shortName = (name: string) =>
+    name
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .join(' ');
+
   const deadlineLabel = useMemo(() => {
     const from = pmFrom ? new Date(`${pmFrom}T12:00:00`) : null;
     const to = pmTo ? new Date(`${pmTo}T12:00:00`) : null;
@@ -764,7 +772,20 @@ export default function TasksPage() {
                     >
                       {listLabel}
                     </span>
-                    <p className="text-xs font-medium text-slate-500">{taskRefLabel(task.id)}</p>
+                    <p className="text-xs font-medium text-slate-500">
+                      {taskRefLabel(task.id)}
+                      {currentUser?.role !== 'Employee' ? (
+                        isTeamLeaderCreatedTask(task, users) && assignee?.name?.trim() ? (
+                          <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-700">
+                            {shortName(assignee.name)}
+                          </span>
+                        ) : assignee?.team?.trim() ? (
+                          <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-700">
+                            {assignee.team.trim()}
+                          </span>
+                        ) : null
+                      ) : null}
+                    </p>
                     <p className="flex items-center gap-2 text-xs text-slate-600">
                       <Building2 className="h-4 w-4 shrink-0 text-orange-500" aria-hidden />
                       <span className="truncate">{deptOrTeam}</span>
@@ -1220,7 +1241,21 @@ export default function TasksPage() {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-                  <span className="text-xs text-slate-500 break-all">{taskRefLabel(selectedTask.id)}</span>
+                  <span className="text-xs text-slate-500 break-all">
+                    {taskRefLabel(selectedTask.id)}
+                    {currentUser?.role !== 'Employee' ? (
+                      isTeamLeaderCreatedTask(selectedTask, users) &&
+                      users.find((u) => u.id === selectedTask.assignedTo)?.name?.trim() ? (
+                        <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-700">
+                          {shortName(users.find((u) => u.id === selectedTask.assignedTo)!.name!)}
+                        </span>
+                      ) : users.find((u) => u.id === selectedTask.assignedTo)?.team?.trim() ? (
+                        <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-700">
+                          {users.find((u) => u.id === selectedTask.assignedTo)!.team!.trim()}
+                        </span>
+                      ) : null
+                    ) : null}
+                  </span>
                 </div>
 
                 {selectedTaskSubmitNote ? (

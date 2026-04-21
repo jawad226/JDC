@@ -4,6 +4,7 @@ import { TeamAttendanceStats, TimesheetTable } from '@/features/timesheet/widget
 import { TaskTotalWorkDisplay } from '@/components/tasks/TaskTotalWorkDisplay';
 import { useStore, useShallow } from '@/lib/store';
 import type { Task, TaskWorkflowStatus } from '@/lib/store';
+import { isTeamLeaderCreatedTask } from '@/lib/store';
 import { getLatestSubmitNote } from '@/lib/task-submit-note';
 import { getLatestHistoryAtMs, taskHasActivityInLastDays } from '@/lib/taskWorkTimer';
 import { format } from 'date-fns';
@@ -84,6 +85,15 @@ function statusChipClass(status: TaskWorkflowStatus): string {
 
 function taskRefLabel(id: string): string {
   return `TASK-${id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase()}`;
+}
+
+function shortName(name: string): string {
+  return name
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(' ');
 }
 
 export default function TeamDataPage() {
@@ -520,6 +530,17 @@ export default function TeamDataPage() {
                                 <span className="inline-flex items-center gap-1.5 font-mono text-[10px] font-medium text-slate-400">
                                   <Clock className="h-3 w-3 shrink-0" aria-hidden />
                                   {taskRefLabel(task.id)}
+                                  {currentUser?.role !== 'Employee' ? (
+                                    isTeamLeaderCreatedTask(task, users) && assignee?.name?.trim() ? (
+                                      <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 font-sans text-[10px] font-bold uppercase tracking-wide text-slate-700">
+                                        {shortName(assignee.name)}
+                                      </span>
+                                    ) : assignee?.team?.trim() ? (
+                                      <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 font-sans text-[10px] font-bold uppercase tracking-wide text-slate-700">
+                                        {assignee.team.trim()}
+                                      </span>
+                                    ) : null
+                                  ) : null}
                                 </span>
                               </div>
                             </div>
