@@ -197,7 +197,7 @@ function TimerWidget() {
 
               <div className="mt-4 grid gap-2">
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-600">
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-lg border border-slate-100 bg-slate-50 text-slate-500">
+                  <span className="inline-flex h-6  w-6 items-center justify-center rounded-lg border border-slate-100 bg-slate-50 text-slate-500">
                     <Target className="h-4 w-4" />
                   </span>
                   {siteLabel}
