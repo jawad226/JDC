@@ -134,7 +134,7 @@ export default function ForgotPasswordView() {
           <button
             type="submit"
             disabled={loading}
-            className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 py-3.5 text-sm font-bold text-white hover:bg-slate-800 disabled:opacity-60"
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-700 py-3.5 text-sm font-bold text-white hover:bg-blue-600 disabled:opacity-60"
           >
             {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Mail className="h-5 w-5" />}
             Send verification code
@@ -150,16 +150,6 @@ export default function ForgotPasswordView() {
             <ArrowLeft className="h-4 w-4" />
             Use a different email
           </button>
-
-          <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 px-3 py-2.5 text-sm text-indigo-950">
-            <p className="flex items-center gap-2 font-semibold">
-              <Mail className="h-4 w-4 shrink-0" aria-hidden />
-              Code sent to <span className="break-all">{submittedEmail}</span>
-            </p>
-            <p className="mt-2 text-xs leading-relaxed text-indigo-800/90">
-              Enter the 6-digit code from your email. This page must stay on the same browser so the reset can complete.
-            </p>
-          </div>
 
           <form onSubmit={handleOtpSubmit} className="space-y-4">
             <div>

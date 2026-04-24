@@ -184,7 +184,7 @@ export default function RegisterView() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className={`${AUTH_INPUT_COMPACT_CLASS} pr-11`}
-              placeholder="8+ chars with upper/lower/number/special"
+              placeholder="Password"
             />
             <button
               type="button"
@@ -194,21 +194,6 @@ export default function RegisterView() {
               {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
-          {(() => {
-            const s = passwordStrength(password);
-            const item = (ok: boolean, label: string) => (
-              <span className={ok ? 'text-emerald-700' : 'text-slate-400'}>{label}</span>
-            );
-            return (
-              <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[11px] font-semibold">
-                {item(s.minLen, '8+ chars')}
-                {item(s.upper, 'Upper')}
-                {item(s.lower, 'Lower')}
-                {item(s.number, 'Number')}
-                {item(s.special, 'Special')}
-              </div>
-            );
-          })()}
           {fieldError.password ? (
             <p className="mt-1 text-xs font-semibold text-rose-600">{fieldError.password}</p>
           ) : null}

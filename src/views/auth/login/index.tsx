@@ -133,9 +133,6 @@ export default function SignInView() {
             Register
           </Link>
         </p>
-        <p className="text-[11px] text-slate-400 text-center leading-relaxed">
-          Use your registered account. New users must verify email, then wait for admin approval if required.
-        </p>
       </form>
     </AuthShell>
   );
