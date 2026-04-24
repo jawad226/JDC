@@ -48,4 +48,21 @@ export const API_PATHS = {
       hrUpsertSummary: '/api/daily-updates/hr/summary',
     },
   },
+  /**
+   * Chat microservice paths (relative to `NEXT_PUBLIC_CHAT_API_URL`).
+   * Used by in-app messages (/messages).
+   */
+  chat: {
+    threads: '/api/chats',
+    openDm: '/api/chats/dm',
+    createGroup: '/api/chats/group',
+    updateGroup: (chatId: string) => `/api/chats/${encodeURIComponent(chatId)}`,
+    deleteGroup: (chatId: string) => `/api/chats/${encodeURIComponent(chatId)}`,
+    addMembers: (chatId: string) => `/api/chats/${encodeURIComponent(chatId)}/members:add`,
+    removeMembers: (chatId: string) => `/api/chats/${encodeURIComponent(chatId)}/members:remove`,
+    messages: (chatId: string) => `/api/chats/${encodeURIComponent(chatId)}/messages`,
+    message: (chatId: string, messageId: string) =>
+      `/api/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}`,
+    markRead: (chatId: string) => `/api/chats/${encodeURIComponent(chatId)}/read`,
+  },
 } as const;

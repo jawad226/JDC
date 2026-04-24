@@ -18,6 +18,8 @@ import {
 import { emitChatSocketEvent } from '@/lib/chat-socket';
 import { MAX_UPLOAD_FILE_BYTES } from '@/lib/file-upload-limits';
 import { clockInBlockedBeforeOfficeStart, isClockInLate } from '@/lib/attendanceRules';
+import { API_PATHS } from '@/lib/api/api-base-urls';
+import { resolveChatBaseURL } from '@/lib/api/chat-api.config';
 import {
   addTaskCommentApi,
   approveTaskApi,
@@ -456,6 +458,10 @@ interface AppState {
   passwordResetTokens: PasswordResetToken[];
   /** In-app messaging (DMs + groups); rules in `@/lib/messaging`. */
   chatThreads: ChatThread[];
+  /** Fetch all chats for current user from chat-backend. */
+  syncChatThreads: () => Promise<{ ok: true } | { ok: false; error?: string }>;
+  /** Fetch messages for a chatId (on open) from chat-backend. */
+  syncChatMessages: (chatId: string) => Promise<{ ok: true } | { ok: false; error?: string }>;
   sendChatMessage: (
     chatId: string,
     input: {
@@ -463,32 +469,37 @@ interface AppState {
       attachment?: ChatAttachment | null;
       replyToId?: string | null;
     }
-  ) => { ok: true } | { ok: false; error?: string };
+  ) => Promise<{ ok: true } | { ok: false; error?: string }>;
   editChatMessage: (
     chatId: string,
     messageId: string,
     newBody: string
-  ) => { ok: true } | { ok: false; error?: string };
-  deleteChatMessage: (chatId: string, messageId: string) => { ok: true } | { ok: false; error?: string };
+  ) => Promise<{ ok: true } | { ok: false; error?: string }>;
+  deleteChatMessage: (chatId: string, messageId: string) => Promise<{ ok: true } | { ok: false; error?: string }>;
   forwardChatMessage: (
     targetChatId: string,
     source: { sourceChatId: string; messageId: string }
-  ) => { ok: true } | { ok: false; error?: string };
-  openOrCreateDm: (otherUserId: string) => { ok: true; chatId: string } | { ok: false; error?: string };
+  ) => Promise<{ ok: true } | { ok: false; error?: string }>;
+  openOrCreateDm: (
+    otherUserId: string
+  ) => Promise<{ ok: true; chatId: string } | { ok: false; error?: string }>;
   createGroupChat: (input: {
     name: string;
     memberIds: string[];
     scope: 'official' | 'hr_group' | 'tl_group';
-  }) => { ok: true; chatId: string } | { ok: false; error?: string };
-  addMembersToGroup: (chatId: string, userIds: string[]) => { ok: true } | { ok: false; error?: string };
-  removeMembersFromGroup: (chatId: string, userIds: string[]) => { ok: true } | { ok: false; error?: string };
+  }) => Promise<{ ok: true; chatId: string } | { ok: false; error?: string }>;
+  addMembersToGroup: (chatId: string, userIds: string[]) => Promise<{ ok: true } | { ok: false; error?: string }>;
+  removeMembersFromGroup: (
+    chatId: string,
+    userIds: string[]
+  ) => Promise<{ ok: true } | { ok: false; error?: string }>;
   updateGroupChat: (
     chatId: string,
     input: { name?: string; avatarUrl?: string | null }
-  ) => { ok: true } | { ok: false; error?: string };
-  deleteGroupChat: (chatId: string) => { ok: true } | { ok: false; error?: string };
+  ) => Promise<{ ok: true } | { ok: false; error?: string }>;
+  deleteGroupChat: (chatId: string) => Promise<{ ok: true } | { ok: false; error?: string }>;
   /** Mark all messages in a chat as read for the current user (read receipts). */
-  markChatRead: (chatId: string) => void;
+  markChatRead: (chatId: string) => Promise<void>;
   /** Simulate another user sending a message (frontend “socket” demo). */
   receiveIncomingChatMessage: (
     chatId: string,
@@ -1635,7 +1646,78 @@ export const useStore = create<AppState>()(
         )
       })),
 
-      sendChatMessage: (chatId, input) => {
+      syncChatThreads: async () => {
+        const { currentUser, chatThreads: existing } = get();
+        if (!currentUser) return { ok: false, error: 'Not signed in' };
+        try {
+          const r = await fetch(`${resolveChatBaseURL()}${API_PATHS.chat.threads}`, {
+            method: 'GET',
+            headers: { 'x-user-id': currentUser.id },
+            credentials: 'include',
+          });
+          const json = await r.json();
+          if (!r.ok || !json?.success) return { ok: false, error: json?.message || 'Failed to load chats' };
+          const byId = new Map(existing.map((t) => [t.id, t]));
+          const next: ChatThread[] = (json.data || []).map((t: any) => {
+            const prev = byId.get(t.id);
+            return {
+              id: String(t.id),
+              kind: t.kind === 'group' ? 'group' : 'dm',
+              scope: (t.scope as any) || 'dm',
+              ...(t.name ? { name: String(t.name) } : {}),
+              ...(t.avatarUrl ? { avatarUrl: String(t.avatarUrl) } : {}),
+              ...(t.teamKey ? { teamKey: String(t.teamKey) } : {}),
+              ...(t.createdById ? { createdById: String(t.createdById) } : {}),
+              memberIds: Array.isArray(t.memberIds) ? t.memberIds.map(String) : prev?.memberIds ?? [],
+              messages: prev?.messages ?? [],
+            } as ChatThread;
+          });
+          set({ chatThreads: next });
+          return { ok: true };
+        } catch (e: any) {
+          return { ok: false, error: e?.message || 'Network error' };
+        }
+      },
+
+      syncChatMessages: async (chatId) => {
+        const { currentUser, chatThreads } = get();
+        if (!currentUser) return { ok: false, error: 'Not signed in' };
+        const thread = chatThreads.find((t) => t.id === chatId);
+        if (!thread) return { ok: false, error: 'Chat not found' };
+        try {
+          const r = await fetch(`${resolveChatBaseURL()}${API_PATHS.chat.messages(chatId)}`, {
+            method: 'GET',
+            headers: { 'x-user-id': currentUser.id },
+            credentials: 'include',
+          });
+          const json = await r.json();
+          if (!r.ok || !json?.success) return { ok: false, error: json?.message || 'Failed to load messages' };
+          const msgs: ChatMessage[] = (json.data || []).map((m: any) => ({
+            id: String(m.id),
+            chatId: String(m.chatId ?? chatId),
+            senderId: m.senderId ? String(m.senderId) : undefined,
+            authorId: String(m.authorId),
+            body: String(m.body ?? ''),
+            createdAt: String(m.createdAt),
+            receiverId: m.receiverId ?? null,
+            groupId: m.groupId ?? null,
+            readByUserIds: Array.isArray(m.readByUserIds) ? m.readByUserIds.map(String) : [],
+            ...(m.attachment ? { attachment: m.attachment as ChatAttachment } : {}),
+            ...(m.editedAt ? { editedAt: String(m.editedAt) } : {}),
+            ...(m.deleted ? { deleted: true } : {}),
+            ...(m.replyToId ? { replyToId: String(m.replyToId) } : {}),
+            ...(m.forwardedFrom ? { forwardedFrom: m.forwardedFrom } : {}),
+          }));
+          set({
+            chatThreads: chatThreads.map((t) => (t.id === chatId ? { ...t, messages: msgs } : t)),
+          });
+          return { ok: true };
+        } catch (e: any) {
+          return { ok: false, error: e?.message || 'Network error' };
+        }
+      },
+
+      sendChatMessage: async (chatId, input) => {
         const { currentUser, users, chatThreads } = get();
         if (!currentUser) return { ok: false, error: 'Not signed in' };
         const text = input.body.trim();
@@ -1653,30 +1735,49 @@ export const useStore = create<AppState>()(
         if (replyToId && !thread.messages.some((m) => m.id === replyToId)) {
           return { ok: false, error: 'Reply target not found' };
         }
-        const rc = resolveMessageRecipients(thread, currentUser.id);
-        const msg: ChatMessage = {
-          id: `m-${Math.random().toString(36).slice(2, 12)}`,
-          chatId,
-          senderId: currentUser.id,
-          authorId: currentUser.id,
-          body: text,
-          createdAt: new Date().toISOString(),
-          readByUserIds: [],
-          receiverId: rc.receiverId,
-          groupId: rc.groupId,
-          ...(attachment ? { attachment } : {}),
-          ...(replyToId ? { replyToId } : {}),
-        };
-        set({
-          chatThreads: chatThreads.map((t) =>
-            t.id === chatId ? { ...t, messages: [...t.messages, msg] } : t
-          ),
-        });
-        emitChatSocketEvent({ type: 'message:new', chatId, message: msg, source: 'send' });
-        return { ok: true };
+        try {
+          const r = await fetch(`${resolveChatBaseURL()}${API_PATHS.chat.messages(chatId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-user-id': currentUser.id },
+            credentials: 'include',
+            body: JSON.stringify({
+              body: text,
+              attachment: attachment ?? undefined,
+              replyToId: replyToId ?? undefined,
+            }),
+          });
+          const json = await r.json();
+          if (!r.ok || !json?.success) return { ok: false, error: json?.message || 'Could not send' };
+          const m = json.data;
+          const msg: ChatMessage = {
+            id: String(m.id),
+            chatId,
+            senderId: currentUser.id,
+            authorId: String(m.authorId ?? currentUser.id),
+            body: String(m.body ?? ''),
+            createdAt: String(m.createdAt),
+            readByUserIds: Array.isArray(m.readByUserIds) ? m.readByUserIds.map(String) : [],
+            receiverId: m.receiverId ?? null,
+            groupId: m.groupId ?? null,
+            ...(m.attachment ? { attachment: m.attachment as ChatAttachment } : {}),
+            ...(m.replyToId ? { replyToId: String(m.replyToId) } : {}),
+            ...(m.forwardedFrom ? { forwardedFrom: m.forwardedFrom } : {}),
+            ...(m.editedAt ? { editedAt: String(m.editedAt) } : {}),
+            ...(m.deleted ? { deleted: true } : {}),
+          };
+          set({
+            chatThreads: chatThreads.map((t) =>
+              t.id === chatId ? { ...t, messages: [...t.messages, msg] } : t
+            ),
+          });
+          emitChatSocketEvent({ type: 'message:new', chatId, message: msg, source: 'send' });
+          return { ok: true };
+        } catch (e: any) {
+          return { ok: false, error: e?.message || 'Network error' };
+        }
       },
 
-      editChatMessage: (chatId, messageId, newBody) => {
+      editChatMessage: async (chatId, messageId, newBody) => {
         const { currentUser, chatThreads } = get();
         if (!currentUser) return { ok: false, error: 'Not signed in' };
         const text = newBody.trim();
@@ -1687,23 +1788,34 @@ export const useStore = create<AppState>()(
         if (msg.authorId !== currentUser.id) return { ok: false, error: 'You can only edit your own messages' };
         if (msg.deleted) return { ok: false, error: 'Message was deleted' };
         if (!text && !msg.attachment) return { ok: false, error: 'Message cannot be empty' };
-        set({
-          chatThreads: chatThreads.map((t) => {
-            if (t.id !== chatId) return t;
-            return {
-              ...t,
-              messages: t.messages.map((m) =>
-                m.id === messageId
-                  ? { ...m, body: text, editedAt: new Date().toISOString() }
-                  : m
-              ),
-            };
-          }),
-        });
-        return { ok: true };
+        try {
+          const r = await fetch(`${resolveChatBaseURL()}${API_PATHS.chat.message(chatId, messageId)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', 'x-user-id': currentUser.id },
+            credentials: 'include',
+            body: JSON.stringify({ body: text }),
+          });
+          const json = await r.json();
+          if (!r.ok || !json?.success) return { ok: false, error: json?.message || 'Could not save' };
+          const m = json.data;
+          set({
+            chatThreads: chatThreads.map((t) => {
+              if (t.id !== chatId) return t;
+              return {
+                ...t,
+                messages: t.messages.map((x) =>
+                  x.id === messageId ? { ...x, body: String(m.body ?? text), editedAt: String(m.editedAt ?? new Date().toISOString()) } : x
+                ),
+              };
+            }),
+          });
+          return { ok: true };
+        } catch (e: any) {
+          return { ok: false, error: e?.message || 'Network error' };
+        }
       },
 
-      deleteChatMessage: (chatId, messageId) => {
+      deleteChatMessage: async (chatId, messageId) => {
         const { currentUser, chatThreads } = get();
         if (!currentUser) return { ok: false, error: 'Not signed in' };
         const thread = chatThreads.find((t) => t.id === chatId);
@@ -1712,23 +1824,32 @@ export const useStore = create<AppState>()(
         if (!msg) return { ok: false, error: 'Message not found' };
         if (msg.authorId !== currentUser.id) return { ok: false, error: 'You can only delete your own messages' };
         if (msg.deleted) return { ok: false, error: 'Already deleted' };
-        set({
-          chatThreads: chatThreads.map((t) => {
-            if (t.id !== chatId) return t;
-            return {
-              ...t,
-              messages: t.messages.map((m) =>
-                m.id === messageId
-                  ? { ...m, deleted: true, body: '', attachment: undefined }
-                  : m
-              ),
-            };
-          }),
-        });
-        return { ok: true };
+        try {
+          const r = await fetch(`${resolveChatBaseURL()}${API_PATHS.chat.message(chatId, messageId)}`, {
+            method: 'DELETE',
+            headers: { 'x-user-id': currentUser.id },
+            credentials: 'include',
+          });
+          const json = await r.json();
+          if (!r.ok || !json?.success) return { ok: false, error: json?.message || 'Could not delete' };
+          set({
+            chatThreads: chatThreads.map((t) => {
+              if (t.id !== chatId) return t;
+              return {
+                ...t,
+                messages: t.messages.map((m) =>
+                  m.id === messageId ? { ...m, deleted: true, body: '', attachment: undefined } : m
+                ),
+              };
+            }),
+          });
+          return { ok: true };
+        } catch (e: any) {
+          return { ok: false, error: e?.message || 'Network error' };
+        }
       },
 
-      forwardChatMessage: (targetChatId, source) => {
+      forwardChatMessage: async (targetChatId, source) => {
         const { currentUser, users, chatThreads } = get();
         if (!currentUser) return { ok: false, error: 'Not signed in' };
         const { sourceChatId, messageId } = source;
@@ -1758,35 +1879,54 @@ export const useStore = create<AppState>()(
         const originalAuthorId = srcMsg.forwardedFrom?.originalAuthorId ?? srcMsg.authorId;
         const originalAuthorName = getName(originalAuthorId);
         const newAtt = att ? { ...att } : undefined;
-        const trc = resolveMessageRecipients(targetThread, currentUser.id);
-
-        const msg: ChatMessage = {
-          id: `m-${Math.random().toString(36).slice(2, 12)}`,
-          chatId: targetChatId,
-          senderId: currentUser.id,
-          authorId: currentUser.id,
-          body: text,
-          createdAt: new Date().toISOString(),
-          readByUserIds: [],
-          receiverId: trc.receiverId,
-          groupId: trc.groupId,
-          ...(newAtt ? { attachment: newAtt } : {}),
-          forwardedFrom: {
-            sourceChatTitle,
-            originalAuthorId,
-            originalAuthorName,
-          },
-        };
-        set({
-          chatThreads: get().chatThreads.map((t) =>
-            t.id === targetChatId ? { ...t, messages: [...t.messages, msg] } : t
-          ),
-        });
-        emitChatSocketEvent({ type: 'message:new', chatId: targetChatId, message: msg, source: 'forward' });
-        return { ok: true };
+        try {
+          const r = await fetch(`${resolveChatBaseURL()}${API_PATHS.chat.messages(targetChatId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-user-id': currentUser.id },
+            credentials: 'include',
+            body: JSON.stringify({
+              body: text,
+              attachment: newAtt ?? undefined,
+              forwardedFrom: {
+                sourceChatTitle,
+                originalAuthorId,
+                originalAuthorName,
+              },
+            }),
+          });
+          const json = await r.json();
+          if (!r.ok || !json?.success) return { ok: false, error: json?.message || 'Could not forward' };
+          const m = json.data;
+          const msg: ChatMessage = {
+            id: String(m.id),
+            chatId: targetChatId,
+            senderId: currentUser.id,
+            authorId: String(m.authorId ?? currentUser.id),
+            body: String(m.body ?? ''),
+            createdAt: String(m.createdAt),
+            readByUserIds: Array.isArray(m.readByUserIds) ? m.readByUserIds.map(String) : [],
+            receiverId: m.receiverId ?? null,
+            groupId: m.groupId ?? null,
+            ...(m.attachment ? { attachment: m.attachment as ChatAttachment } : {}),
+            forwardedFrom: {
+              sourceChatTitle,
+              originalAuthorId,
+              originalAuthorName,
+            },
+          };
+          set({
+            chatThreads: get().chatThreads.map((t) =>
+              t.id === targetChatId ? { ...t, messages: [...t.messages, msg] } : t
+            ),
+          });
+          emitChatSocketEvent({ type: 'message:new', chatId: targetChatId, message: msg, source: 'forward' });
+          return { ok: true };
+        } catch (e: any) {
+          return { ok: false, error: e?.message || 'Network error' };
+        }
       },
 
-      openOrCreateDm: (otherUserId) => {
+      openOrCreateDm: async (otherUserId) => {
         const { currentUser, users, chatThreads } = get();
         if (!currentUser) return { ok: false, error: 'Not signed in' };
         const other = users.find((u) => u.id === otherUserId);
@@ -1794,31 +1934,33 @@ export const useStore = create<AppState>()(
         if (!canDmPair(currentUser, other)) {
           return { ok: false, error: 'You cannot message this person' };
         }
-        const key = dmKeyFor(currentUser.id, otherUserId);
-        const existing = chatThreads.find(
-          (t) =>
-            t.kind === 'dm' &&
-            t.scope === 'dm' &&
-            t.memberIds.length === 2 &&
-            dmKeyFor(t.memberIds[0], t.memberIds[1]) === key
-        );
-        if (existing) return { ok: true, chatId: existing.id };
-
-        const sorted = [currentUser.id, otherUserId].sort();
-        const thread: ChatThread = {
-          id: `dm-${Math.random().toString(36).slice(2, 11)}`,
-          kind: 'dm',
-          scope: 'dm',
-          memberIds: [sorted[0]!, sorted[1]!],
-          messages: [],
-        };
-        set({
-          chatThreads: [...chatThreads, thread],
-        });
-        return { ok: true, chatId: thread.id };
+        try {
+          const r = await fetch(`${resolveChatBaseURL()}${API_PATHS.chat.openDm}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-user-id': currentUser.id },
+            credentials: 'include',
+            body: JSON.stringify({ otherUserId }),
+          });
+          const json = await r.json();
+          if (!r.ok || !json?.success) return { ok: false, error: json?.message || 'Could not open DM' };
+          const t = json.data;
+          const thread: ChatThread = {
+            id: String(t.id),
+            kind: 'dm',
+            scope: 'dm',
+            memberIds: Array.isArray(t.memberIds) ? t.memberIds.map(String) : [currentUser.id, otherUserId].sort(),
+            messages: [],
+          };
+          set({
+            chatThreads: chatThreads.some((x) => x.id === thread.id) ? chatThreads : [...chatThreads, thread],
+          });
+          return { ok: true, chatId: thread.id };
+        } catch (e: any) {
+          return { ok: false, error: e?.message || 'Network error' };
+        }
       },
 
-      createGroupChat: ({ name, memberIds, scope }) => {
+      createGroupChat: async ({ name, memberIds, scope }) => {
         const { currentUser, users, chatThreads } = get();
         if (!currentUser) return { ok: false, error: 'Not signed in' };
         const trimmed = name.trim();
@@ -1829,79 +1971,54 @@ export const useStore = create<AppState>()(
           const ids = [...new Set([currentUser.id, ...memberIds])];
           for (const id of ids) {
             const u = users.find((x) => x.id === id);
-            if (!u || !canAddToOfficialGroup(u)) {
-              return { ok: false, error: 'Invalid member' };
-            }
+            if (!u || !canAddToOfficialGroup(u)) return { ok: false, error: 'Invalid member' };
           }
-          const thread: ChatThread = {
-            id: `g-off-${Math.random().toString(36).slice(2, 9)}`,
-            kind: 'group',
-            scope: 'official',
-            name: trimmed,
-            createdById: currentUser.id,
-            memberIds: ids,
-            messages: [],
-          };
-          set({
-            chatThreads: [...chatThreads, thread],
-          });
-          return { ok: true, chatId: thread.id };
-        }
-
-        if (scope === 'hr_group') {
+        } else if (scope === 'hr_group') {
           if (currentUser.role !== 'HR') return { ok: false, error: 'Only HR can create HR groups' };
           const ids = [...new Set([currentUser.id, ...memberIds])];
           for (const id of ids) {
             const u = users.find((x) => x.id === id);
-            if (!u || !canAddToHrGroup(u)) {
-              return { ok: false, error: 'Members must be HR, Team Leader, or Employee' };
-            }
+            if (!u || !canAddToHrGroup(u)) return { ok: false, error: 'Members must be HR, Team Leader, or Employee' };
           }
-          const thread: ChatThread = {
-            id: `g-hr-${Math.random().toString(36).slice(2, 9)}`,
-            kind: 'group',
-            scope: 'hr_group',
-            name: trimmed,
-            createdById: currentUser.id,
-            memberIds: ids,
-            messages: [],
-          };
-          set({
-            chatThreads: [...chatThreads, thread],
-          });
-          return { ok: true, chatId: thread.id };
-        }
-
-        if (scope === 'tl_group') {
-          if (currentUser.role !== 'Team Leader') {
-            return { ok: false, error: 'Only Team Leaders can create TL groups' };
-          }
+        } else if (scope === 'tl_group') {
+          if (currentUser.role !== 'Team Leader') return { ok: false, error: 'Only Team Leaders can create TL groups' };
           const ids = [...new Set([currentUser.id, ...memberIds])];
           for (const id of ids) {
             const u = users.find((x) => x.id === id);
-            if (!u || !canAddToTlGroup(u)) {
-              return { ok: false, error: 'Members must be HR, Team Leader, or Employee (not Admin)' };
-            }
+            if (!u || !canAddToTlGroup(u)) return { ok: false, error: 'Members must be HR, Team Leader, or Employee (not Admin)' };
           }
-          const thread: ChatThread = {
-            id: `g-tl-${Math.random().toString(36).slice(2, 9)}`,
-            kind: 'group',
-            scope: 'tl_group',
-            name: trimmed,
-            createdById: currentUser.id,
-            memberIds: ids,
-            messages: [],
-          };
-          set({
-            chatThreads: [...chatThreads, thread],
-          });
-          return { ok: true, chatId: thread.id };
+        } else {
+          return { ok: false, error: 'Invalid group type' };
         }
 
-        return { ok: false, error: 'Invalid group type' };
+        try {
+          const r = await fetch(`${resolveChatBaseURL()}${API_PATHS.chat.createGroup}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-user-id': currentUser.id },
+            credentials: 'include',
+            body: JSON.stringify({ scope, name: trimmed, memberIds }),
+          });
+          const json = await r.json();
+          if (!r.ok || !json?.success) return { ok: false, error: json?.message || 'Could not create group' };
+          const t = json.data;
+          const thread: ChatThread = {
+            id: String(t.id),
+            kind: 'group',
+            scope,
+            name: String(t.name ?? trimmed),
+            createdById: String(t.createdById ?? currentUser.id),
+            memberIds: Array.isArray(t.memberIds) ? t.memberIds.map(String) : [currentUser.id, ...memberIds],
+            messages: [],
+            ...(t.avatarUrl ? { avatarUrl: String(t.avatarUrl) } : {}),
+          };
+          set({ chatThreads: [...chatThreads, thread] });
+          return { ok: true, chatId: thread.id };
+        } catch (e: any) {
+          return { ok: false, error: e?.message || 'Network error' };
+        }
       },
 
-      addMembersToGroup: (chatId, userIds) => {
+      addMembersToGroup: async (chatId, userIds) => {
         const { currentUser, users, chatThreads } = get();
         if (!currentUser) return { ok: false, error: 'Not signed in' };
         const thread = chatThreads.find((t) => t.id === chatId);
@@ -1937,17 +2054,30 @@ export const useStore = create<AppState>()(
           return { ok: false, error: 'Cannot add members to this chat' };
         }
 
-        set((state) => ({
-          chatThreads: state.chatThreads.map((t) => {
-            if (t.id !== chatId) return t;
-            const merged = [...new Set([...t.memberIds, ...unique])];
-            return { ...t, memberIds: merged };
-          }),
-        }));
-        return { ok: true };
+        try {
+          const r = await fetch(`${resolveChatBaseURL()}${API_PATHS.chat.addMembers(chatId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-user-id': currentUser.id },
+            credentials: 'include',
+            body: JSON.stringify({ memberIds: unique }),
+          });
+          const json = await r.json();
+          if (!r.ok || !json?.success) return { ok: false, error: json?.message || 'Could not add members' };
+          const t = json.data;
+          set((state) => ({
+            chatThreads: state.chatThreads.map((x) =>
+              x.id === chatId
+                ? { ...x, memberIds: Array.isArray(t.memberIds) ? t.memberIds.map(String) : x.memberIds }
+                : x
+            ),
+          }));
+          return { ok: true };
+        } catch (e: any) {
+          return { ok: false, error: e?.message || 'Network error' };
+        }
       },
 
-      removeMembersFromGroup: (chatId, userIds) => {
+      removeMembersFromGroup: async (chatId, userIds) => {
         const { currentUser, chatThreads } = get();
         if (!currentUser) return { ok: false, error: 'Not signed in' };
         const thread = chatThreads.find((t) => t.id === chatId);
@@ -1990,15 +2120,30 @@ export const useStore = create<AppState>()(
           }
         }
 
-        set({
-          chatThreads: chatThreads.map((t) =>
-            t.id === chatId ? { ...t, memberIds: nextMembers } : t
-          ),
-        });
-        return { ok: true };
+        try {
+          const r = await fetch(`${resolveChatBaseURL()}${API_PATHS.chat.removeMembers(chatId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-user-id': currentUser.id },
+            credentials: 'include',
+            body: JSON.stringify({ memberIds: unique }),
+          });
+          const json = await r.json();
+          if (!r.ok || !json?.success) return { ok: false, error: json?.message || 'Could not remove members' };
+          const t = json.data;
+          set({
+            chatThreads: chatThreads.map((x) =>
+              x.id === chatId
+                ? { ...x, memberIds: Array.isArray(t.memberIds) ? t.memberIds.map(String) : nextMembers }
+                : x
+            ),
+          });
+          return { ok: true };
+        } catch (e: any) {
+          return { ok: false, error: e?.message || 'Network error' };
+        }
       },
 
-      updateGroupChat: (chatId, input) => {
+      updateGroupChat: async (chatId, input) => {
         const { currentUser, chatThreads } = get();
         if (!currentUser) return { ok: false, error: 'Not signed in' };
         const thread = chatThreads.find((t) => t.id === chatId);
@@ -2008,22 +2153,37 @@ export const useStore = create<AppState>()(
         }
         const name = input.name?.trim();
         if (name === '') return { ok: false, error: 'Name cannot be empty' };
-        set({
-          chatThreads: chatThreads.map((t) => {
-            if (t.id !== chatId) return t;
-            return {
-              ...t,
-              ...(name ? { name } : {}),
-              ...(input.avatarUrl !== undefined
-                ? { avatarUrl: input.avatarUrl ?? undefined }
-                : {}),
-            };
-          }),
-        });
-        return { ok: true };
+        try {
+          const r = await fetch(`${resolveChatBaseURL()}${API_PATHS.chat.updateGroup(chatId)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', 'x-user-id': currentUser.id },
+            credentials: 'include',
+            body: JSON.stringify({
+              ...(name !== undefined ? { name: name || undefined } : {}),
+              ...(input.avatarUrl !== undefined ? { avatarUrl: input.avatarUrl } : {}),
+            }),
+          });
+          const json = await r.json();
+          if (!r.ok || !json?.success) return { ok: false, error: json?.message || 'Could not update group' };
+          const t = json.data;
+          set({
+            chatThreads: chatThreads.map((x) =>
+              x.id === chatId
+                ? {
+                    ...x,
+                    ...(t.name !== undefined ? { name: t.name || undefined } : {}),
+                    ...(t.avatarUrl !== undefined ? { avatarUrl: t.avatarUrl || undefined } : {}),
+                  }
+                : x
+            ),
+          });
+          return { ok: true };
+        } catch (e: any) {
+          return { ok: false, error: e?.message || 'Network error' };
+        }
       },
 
-      deleteGroupChat: (chatId) => {
+      deleteGroupChat: async (chatId) => {
         const { currentUser, chatThreads } = get();
         if (!currentUser) return { ok: false, error: 'Not signed in' };
         const thread = chatThreads.find((t) => t.id === chatId);
@@ -2034,15 +2194,31 @@ export const useStore = create<AppState>()(
         if (thread.scope === 'official' && thread.id === 'g-official-1') {
           return { ok: false, error: 'This channel cannot be deleted' };
         }
-        set({
-          chatThreads: chatThreads.filter((t) => t.id !== chatId),
-        });
-        return { ok: true };
+        try {
+          const r = await fetch(`${resolveChatBaseURL()}${API_PATHS.chat.deleteGroup(chatId)}`, {
+            method: 'DELETE',
+            headers: { 'x-user-id': currentUser.id },
+            credentials: 'include',
+          });
+          const json = await r.json();
+          if (!r.ok || !json?.success) return { ok: false, error: json?.message || 'Could not delete group' };
+          set({ chatThreads: chatThreads.filter((t) => t.id !== chatId) });
+          return { ok: true };
+        } catch (e: any) {
+          return { ok: false, error: e?.message || 'Network error' };
+        }
       },
 
-      markChatRead: (chatId) => {
+      markChatRead: async (chatId) => {
         const uid = get().currentUser?.id;
         if (!uid) return;
+        try {
+          await fetch(`${resolveChatBaseURL()}${API_PATHS.chat.markRead(chatId)}`, {
+            method: 'POST',
+            headers: { 'x-user-id': uid },
+            credentials: 'include',
+          });
+        } catch {}
         set((state) => ({
           chatThreads: state.chatThreads.map((t) => {
             if (t.id !== chatId) return t;

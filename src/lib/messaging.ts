@@ -223,7 +223,9 @@ export function canSendInThread(
     const otherId = thread.memberIds.find((id) => id !== user.id);
     if (!otherId) return false;
     const otherRole = roleOf(otherId, users);
-    if (!otherRole) return false;
+    // In some flows the DM thread can exist before the full user roster is hydrated.
+    // Avoid disabling chat input for a few seconds due to missing local role data.
+    if (!otherRole) return true;
     return canDm(user.role, otherRole);
   }
 

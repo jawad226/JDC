@@ -19,6 +19,8 @@ import {
   Forward,
   Camera,
   UserMinus,
+  Check,
+  CheckCheck,
 } from 'lucide-react';
 import { useStore, useShallow, canManageGroupSettings, canDeleteGroup } from '@/lib/store';
 import type { User } from '@/lib/store';
@@ -165,6 +167,8 @@ export default function MessagesPage() {
     currentUser,
     users,
     chatThreads,
+    syncChatThreads,
+    syncChatMessages,
     sendChatMessage,
     editChatMessage,
     deleteChatMessage,
@@ -181,6 +185,8 @@ export default function MessagesPage() {
       currentUser: s.currentUser,
       users: s.users,
       chatThreads: s.chatThreads,
+      syncChatThreads: s.syncChatThreads,
+      syncChatMessages: s.syncChatMessages,
       sendChatMessage: s.sendChatMessage,
       editChatMessage: s.editChatMessage,
       deleteChatMessage: s.deleteChatMessage,
@@ -240,8 +246,34 @@ export default function MessagesPage() {
 
   useEffect(() => {
     if (!selectedId || !currentUser) return;
-    markChatRead(selectedId);
+    void markChatRead(selectedId);
   }, [selectedId, selected?.messages.length, currentUser, markChatRead]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    void syncChatThreads();
+  }, [currentUser?.id, syncChatThreads]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const id = window.setInterval(() => {
+      void syncChatThreads();
+    }, 5000);
+    return () => window.clearInterval(id);
+  }, [currentUser?.id, syncChatThreads]);
+
+  useEffect(() => {
+    if (!selectedId || !currentUser) return;
+    void syncChatMessages(selectedId);
+  }, [selectedId, currentUser?.id, syncChatMessages]);
+
+  useEffect(() => {
+    if (!selectedId || !currentUser) return;
+    const id = window.setInterval(() => {
+      void syncChatMessages(selectedId);
+    }, 2500);
+    return () => window.clearInterval(id);
+  }, [selectedId, currentUser?.id, syncChatMessages]);
 
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -290,18 +322,18 @@ export default function MessagesPage() {
 
   const canSend = currentUser && selected ? canSendInThread(selected, currentUser, users) : false;
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!selected || !canSend) return;
     setErrorHint(null);
     if (editingId) {
-      const r = editChatMessage(selected.id, editingId, draft);
+      const r = await editChatMessage(selected.id, editingId, draft);
       if (r.ok) {
         setDraft('');
         setEditingId(null);
       } else setErrorHint(r.error ?? 'Could not save');
       return;
     }
-    const r = sendChatMessage(selected.id, {
+    const r = await sendChatMessage(selected.id, {
       body: draft,
       attachment: pendingAttachment,
       replyToId: replyingTo?.id ?? null,
@@ -325,11 +357,11 @@ export default function MessagesPage() {
     setDraft('');
   };
 
-  const handleDeleteMessage = (m: ChatMessage) => {
+  const handleDeleteMessage = async (m: ChatMessage) => {
     if (!selected || !currentUser || m.authorId !== currentUser.id) return;
     if (!window.confirm('Delete this message for everyone?')) return;
     setErrorHint(null);
-    const r = deleteChatMessage(selected.id, m.id);
+    const r = await deleteChatMessage(selected.id, m.id);
     if (!r.ok) setErrorHint(r.error ?? 'Could not delete');
     if (editingId === m.id) cancelEdit();
   };
@@ -406,10 +438,10 @@ export default function MessagesPage() {
     );
   }, [visibleThreads, selected, forwardingMessage, currentUser, users]);
 
-  const runForwardTo = (targetChatId: string) => {
+  const runForwardTo = async (targetChatId: string) => {
     if (!selected || !forwardingMessage) return;
     setErrorHint(null);
-    const r = forwardChatMessage(targetChatId, {
+    const r = await forwardChatMessage(targetChatId, {
       sourceChatId: selected.id,
       messageId: forwardingMessage.id,
     });
@@ -425,10 +457,10 @@ export default function MessagesPage() {
   const canRemoveSelectedGroup =
     selected?.kind === 'group' && currentUser ? canDeleteGroup(selected, currentUser) : false;
 
-  const saveGroupDetailsName = () => {
+  const saveGroupDetailsName = async () => {
     if (!selected || selected.kind !== 'group') return;
     setErrorHint(null);
-    const r = updateGroupChat(selected.id, { name: groupNameEdit });
+    const r = await updateGroupChat(selected.id, { name: groupNameEdit });
     if (!r.ok) setErrorHint(r.error ?? 'Could not update name');
   };
 
@@ -442,27 +474,27 @@ export default function MessagesPage() {
     }
     setErrorHint(null);
     const reader = new FileReader();
-    reader.onload = () => {
-      const r = updateGroupChat(selected.id, { avatarUrl: reader.result as string });
+    reader.onload = async () => {
+      const r = await updateGroupChat(selected.id, { avatarUrl: reader.result as string });
       if (!r.ok) setErrorHint(r.error ?? 'Could not update photo');
     };
     reader.readAsDataURL(file);
     e.target.value = '';
   };
 
-  const handleDeleteSelectedGroup = () => {
+  const handleDeleteSelectedGroup = async () => {
     if (!selected || selected.kind !== 'group') return;
     if (!window.confirm('Delete this group for everyone? All messages in it will be removed.')) return;
     setErrorHint(null);
     const id = selected.id;
-    const r = deleteGroupChat(id);
+    const r = await deleteGroupChat(id);
     if (r.ok) {
       setGroupInfoOpen(false);
       setSelectedId(null);
     } else setErrorHint(r.error ?? 'Could not delete');
   };
 
-  const confirmRemoveOrLeaveMember = (userId: string) => {
+  const confirmRemoveOrLeaveMember = async (userId: string) => {
     if (!selected || selected.kind !== 'group' || !currentUser) return;
     const isSelf = userId === currentUser.id;
     const u = users.find((x) => x.id === userId);
@@ -471,7 +503,7 @@ export default function MessagesPage() {
       : `Remove ${u?.name ?? 'this person'} from the group?`;
     if (!window.confirm(msg)) return;
     setErrorHint(null);
-    const r = removeMembersFromGroup(selected.id, [userId]);
+    const r = await removeMembersFromGroup(selected.id, [userId]);
     if (!r.ok) {
       setErrorHint(r.error ?? 'Could not update members');
       return;
@@ -482,10 +514,10 @@ export default function MessagesPage() {
     }
   };
 
-  const addSelectedMembersInGroupModal = () => {
+  const addSelectedMembersInGroupModal = async () => {
     if (!selected || selected.kind !== 'group' || groupModalAddIds.length === 0) return;
     setErrorHint(null);
-    const r = addMembersToGroup(selected.id, groupModalAddIds);
+    const r = await addMembersToGroup(selected.id, groupModalAddIds);
     if (r.ok) setGroupModalAddIds([]);
     else setErrorHint(r.error ?? 'Could not add');
   };
@@ -876,6 +908,20 @@ export default function MessagesPage() {
                                       (edited)
                                     </span>
                                   )}
+                                  {mine && !m.deleted && (() => {
+                                    // WhatsApp-style read receipt ticks:
+                                    // - 1 tick: sent (default once saved)
+                                    // - 2 ticks: someone else has read (readByUserIds contains any non-author member)
+                                    const readers = new Set(m.readByUserIds ?? []);
+                                    const othersWhoRead = Array.from(readers).filter((id) => id !== m.authorId);
+                                    const seen = othersWhoRead.length > 0;
+                                    const Icon = seen ? CheckCheck : Check;
+                                    return (
+                                      <span className={`ml-auto inline-flex items-center ${seen ? 'text-sky-200' : 'text-indigo-200'}`}>
+                                        <Icon className="h-3.5 w-3.5" />
+                                      </span>
+                                    );
+                                  })()}
                                 </p>
                               </div>
                             </div>
@@ -1339,8 +1385,8 @@ export default function MessagesPage() {
                       <button
                         type="button"
                         className="flex w-full items-center gap-3 rounded-2xl border border-transparent px-3 py-2.5 text-left hover:border-slate-200 hover:bg-slate-50"
-                        onClick={() => {
-                          const r = openOrCreateDm(id);
+                        onClick={async () => {
+                          const r = await openOrCreateDm(id);
                           if (r.ok) {
                             setSelectedId(r.chatId);
                             setDmOpen(false);
@@ -1411,10 +1457,10 @@ export default function MessagesPage() {
             </div>
             <button
               type="button"
-              onClick={() => {
+              onClick={async () => {
                 const sc = groupScope();
                 if (!sc) return;
-                const r = createGroupChat({ name: groupName, memberIds: groupMemberIds, scope: sc });
+                const r = await createGroupChat({ name: groupName, memberIds: groupMemberIds, scope: sc });
                 if (r.ok) {
                   setSelectedId(r.chatId);
                   setGroupOpen(false);
@@ -1458,9 +1504,9 @@ export default function MessagesPage() {
             </div>
             <button
               type="button"
-              onClick={() => {
+              onClick={async () => {
                 if (!selected) return;
-                const r = addMembersToGroup(selected.id, addUserIds);
+                const r = await addMembersToGroup(selected.id, addUserIds);
                 if (r.ok) {
                   setAddOpen(false);
                   setAddUserIds([]);
